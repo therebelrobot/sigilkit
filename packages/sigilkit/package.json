@@ -1,6 +1,6 @@
 {
   "name": "sigilkit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Composable 2D adventure engine for React in the spirit of SCUMM: painted rooms, point-and-click verbs, Ink story, orthogonal and isometric rooms, optional PartyServer multiplayer. Import only the parts you use.",
   "repository": {
     "url": "https://github.com/therebelrobot/sigilkit"
