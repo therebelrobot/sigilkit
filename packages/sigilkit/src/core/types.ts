@@ -124,6 +124,14 @@ export interface PropDef {
   tile?: TilePos;
   /** Tile used for depth sorting; defaults to `tile`, or the art's bottom edge. */
   depthTile?: TilePos;
+  /**
+   * Which point of the static art sits on the placement point, as fractions of
+   * its width and height. Defaults to bottom-centre `{ x: 0.5, y: 1 }` for
+   * `tile` and top-left `{ x: 0, y: 0 }` for `at`. An isometric block whose
+   * floor diamond extends below the tile centre uses
+   * `{ x: 0.5, y: (wallHeight + tileHeight / 2) / (wallHeight + tileHeight) }`.
+   */
+  anchor?: Vec2;
 }
 
 export interface ItemDef {

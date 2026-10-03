@@ -57,8 +57,12 @@ export interface RendererOptions {
   scaling?: Scaling;
   /** Letterbox color. */
   background?: number;
-  /** Colors and wall height for rooms drawn without background art. */
-  blockout?: Partial<BlockoutStyle>;
+  /**
+   * Colors and wall height for rooms drawn without background art. `false` draws
+   * nothing instead, for games that build rooms themselves (runtime tiles in
+   * `layers.floor`, wall props) and don't want the blockout underneath.
+   */
+  blockout?: Partial<BlockoutStyle> | false;
   /** Draw walkmap and hotspot outlines. */
   debug?: boolean;
   /**
@@ -190,7 +194,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
     if (bg) {
       floor.addChild(new Sprite(bg));
       if (!room.size) roomBounds = { x: 0, y: 0, width: bg.width, height: bg.height };
-    } else {
+    } else if (opts.blockout !== false) {
       const b = blockout(room, projection, grid, { ...DEFAULT_BLOCKOUT, ...opts.blockout });
       floor.addChild(b.floor);
       for (const g of b.blocks) {
@@ -212,14 +216,18 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       if (destroyed || world.room !== room) return;
       if (!tex) continue;
       const s = new Sprite(tex);
-      if (p.at) s.position.set(p.at.x, p.at.y);
-      else if (p.tile) {
+      if (p.at) {
+        s.anchor.set(p.anchor?.x ?? 0, p.anchor?.y ?? 0);
+        s.position.set(p.at.x, p.at.y);
+      } else if (p.tile) {
         // Tile-placed art stands on the tile's foot point.
-        s.anchor.set(0.5, 1);
+        s.anchor.set(p.anchor?.x ?? 0.5, p.anchor?.y ?? 1);
         const pos = projection.tileToScreen(p.tile.x, p.tile.y);
         s.position.set(pos.x, pos.y);
       }
-      s.zIndex = p.depthTile || p.tile ? propDepth(p, projection, 0) : s.y + tex.height;
+      // Without a sort tile, sort by the art's bottom edge wherever the anchor puts it.
+      const artBottomEdge = s.y + tex.height * (1 - s.anchor.y);
+      s.zIndex = p.depthTile || p.tile ? propDepth(p, projection, 0) : artBottomEdge;
       entities.addChild(s);
       props.push(s);
     }

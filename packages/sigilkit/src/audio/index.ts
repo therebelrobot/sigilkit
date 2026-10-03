@@ -5,7 +5,7 @@ export interface AudioOptions {
   resolve: (key: string) => string;
   musicVolume?: number;
   sfxVolume?: number;
-  /** Music gain multiplier while a dialog line is showing. Default 0.45; 1 disables ducking. */
+  /** Music gain multiplier while a dialog line is showing. Default 0.45; 1 disables ducking. Games add their own reasons with duckMusic(). */
   duck?: number;
   /** Crossfade time in seconds. Default 1.2. */
   fade?: number;
@@ -24,6 +24,9 @@ export class AudioDirector {
   #sfx = this.ctx.createGain();
   #duck = this.ctx.createGain();
   #current: { key: string; src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  /** Active music-ducking reasons ("dialog", game-defined ones) and their gain multipliers. */
+  #duckLevelByReason = new Map<string, number>();
+  #scheduledDuckLevel = 1;
   #off: (() => void)[] = [];
 
   constructor(world: World, options: AudioOptions) {
@@ -36,7 +39,7 @@ export class AudioDirector {
     this.#off.push(
       world.events.on("music", ({ key }) => void this.music(key).catch(this.#warn)),
       world.events.on("sfx", ({ key }) => void this.sfx(key).catch(this.#warn)),
-      world.ui.subscribe(() => this.#setDuck(world.ui.get().line !== null)),
+      world.ui.subscribe(() => this.duckMusic("dialog", world.ui.get().line !== null ? this.#opts.duck : 1)),
     );
     if (world.room?.music) void this.music(world.room.music).catch(this.#warn);
   }
@@ -93,8 +96,24 @@ export class AudioDirector {
     void this.ctx.close();
   }
 
-  #setDuck(on: boolean): void {
-    this.#duck.gain.setTargetAtTime(on ? this.#opts.duck : 1, this.ctx.currentTime, 0.08);
+  /**
+   * Lower the music for a named reason, without touching the player's music volume.
+   * `level` is a gain multiplier: 1 removes the reason, 0.5 is about −6 dB, 0 silences.
+   * Reasons multiply, so dialog ducking (the built-in reason "dialog") and a game's own
+   * (say, "weave" while the player plays notes) stack instead of fighting.
+   * Safe to call every frame: the gain glides there over `smoothingSeconds`, and
+   * changes smaller than 0.01 aren't rescheduled.
+   */
+  duckMusic(reason: string, level: number, smoothingSeconds = 0.08): void {
+    if (level >= 1) this.#duckLevelByReason.delete(reason);
+    else this.#duckLevelByReason.set(reason, Math.max(0, level));
+    let combinedLevel = 1;
+    for (const reasonLevel of this.#duckLevelByReason.values()) combinedLevel *= reasonLevel;
+    const reachesFullOrSilent = combinedLevel === 1 || combinedLevel === 0;
+    const changeIsTiny = Math.abs(combinedLevel - this.#scheduledDuckLevel) < 0.01;
+    if (combinedLevel === this.#scheduledDuckLevel || (changeIsTiny && !reachesFullOrSilent)) return;
+    this.#scheduledDuckLevel = combinedLevel;
+    this.#duck.gain.setTargetAtTime(combinedLevel, this.ctx.currentTime, smoothingSeconds);
   }
 
   #load(key: string): Promise<AudioBuffer> {
