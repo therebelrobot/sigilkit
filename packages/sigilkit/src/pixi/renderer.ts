@@ -83,11 +83,12 @@ export interface Renderer {
   toClient(room: Vec2): Vec2;
   setDebug(on: boolean): void;
   /**
-   * Extra layers for game effects. `world` is in room pixels, above actors and
-   * props (follows the camera). `overlay` is in logical-resolution pixels over
-   * the whole frame (vignettes, flashes, HUD-in-canvas).
+   * Extra layers for game effects, all in room pixels except `overlay`:
+   * - `floor`: on the ground, under walls, props and actors (paths, ripples, decals)
+   * - `world`: above actors and props (particles, auras); both follow the camera
+   * - `overlay`: logical-resolution pixels over the whole frame (vignettes, flashes)
    */
-  readonly layers: { world: Container; overlay: Container };
+  readonly layers: { floor: Container; world: Container; overlay: Container };
   destroy(): void;
 }
 
@@ -118,9 +119,10 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   const entities = new Container({ sortableChildren: true });
   const speech = new Container();
   const focusLayer = new Graphics();
+  const floorFx = new Container();
   const worldFx = new Container();
   const overlay = new Container();
-  camera.addChild(floor, debugLayer, entities, focusLayer, worldFx, speech);
+  camera.addChild(floor, floorFx, debugLayer, entities, focusLayer, worldFx, speech);
   frame.addChild(mask, camera, overlay);
   frame.mask = mask;
   app.stage.addChild(frame);
@@ -410,7 +412,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       const r = app.canvas.getBoundingClientRect();
       return { x: g.x + r.left, y: g.y + r.top };
     },
-    layers: { world: worldFx, overlay },
+    layers: { floor: floorFx, world: worldFx, overlay },
     setDebug: (on) => {
       debug = on;
       drawDebug();

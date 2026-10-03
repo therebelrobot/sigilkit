@@ -147,7 +147,7 @@ Dialog defaults to the DOM box: it scales with system font settings and reaches 
 ### Props, layers and the blockout
 
 - **Animated props:** `RoomDef.props` entries can be placed by `tile` (fractional tiles centre a prop across several) and given an `id`. A renderer `props` factory returns a `PropDisplay` for any of them; it's updated every frame with the world, and depth-sorts with actors. Props the factory skips fall back to their static `asset`. This is how scenery reacts to game state without becoming fake actors.
-- **Effect layers:** `renderer.layers.world` is in room pixels above actors (particles, auras) and follows the camera; `renderer.layers.overlay` covers the frame in logical pixels (tints, flashes, static).
+- **Effect layers:** `renderer.layers.floor` sits on the ground under walls, props and actors (paths, ripples, decals); `renderer.layers.world` is above them (particles, auras). Both are in room pixels and follow the camera. `renderer.layers.overlay` covers the frame in logical pixels (tints, flashes, static).
 - **Blockout:** rooms without art draw from the walkmap. `'#'` is wall, raised in isometric rooms; other non-`'.'` characters are blocked floor under furniture. `blockout: { floor, blocked, wallTop, wallLeft, wallRight, wallHeight }` sets the palette.
 
 ## Multiplayer (optional)
