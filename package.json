@@ -1,0 +1,20 @@
+{
+  "name": "sigilkit",
+  "version": "0.0.1",
+  "description": "a 2d game engine",
+  "homepage": "https://github.com/therebelrobot/sigilkit#readme",
+  "bugs": {
+    "url": "https://github.com/therebelrobot/sigilkit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/therebelrobot/sigilkit.git"
+  },
+  "license": "MIT",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
