@@ -18,7 +18,7 @@
     "pixi.js": "^8.22.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "sigilkit": "0.1.0"
+    "sigilkit": "*"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

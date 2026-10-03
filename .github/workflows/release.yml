@@ -24,4 +24,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - run: npm publish --workspaces --access public --provenance
+      # The tag must match the package version, or npm would publish something else.
+      - name: Check tag matches package version
+        run: |
+          version=$(node -p "require('./packages/sigilkit/package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match packages/sigilkit version $version"
+            exit 1
+          fi
+      - run: npm publish -w sigilkit --access public --provenance

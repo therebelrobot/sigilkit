@@ -20,9 +20,9 @@
     "test:watch": "vitest",
     "build": "npm run build --workspaces --if-present",
     "rename": "tsx scripts/rename.ts",
-    "release:patch": "npm -w sigilkit version patch -m \"chore: release v%s\" && git push && git push --tags",
-    "release:minor": "npm -w sigilkit version minor -m \"chore: release v%s\" && git push && git push --tags",
-    "release:major": "npm -w sigilkit version major -m \"chore: release v%s\" && git push && git push --tags",
+    "release:patch": "tsx scripts/release.ts patch",
+    "release:minor": "tsx scripts/release.ts minor",
+    "release:major": "tsx scripts/release.ts major",
     "release:tags": "git tag --sort=-v:refname | grep '^v'"
   },
   "devDependencies": {
