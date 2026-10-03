@@ -1,4 +1,4 @@
-import { Direction, GridEngineHeadless, NoPathFoundStrategy } from "grid-engine";
+import { Direction, GridEngineHeadless, NoPathFoundStrategy, type NumberOfDirections } from "grid-engine";
 import { builtinCommands, tokenize, type CommandFn } from "./commands";
 import { Emitter, Store } from "./events";
 import { projectionFor, type Projection } from "./projection";
@@ -51,6 +51,11 @@ export interface WorldOptions {
   /** Create the single-player actor. Default true; servers set false and add one actor per connection. */
   spawnPlayer?: boolean;
 }
+
+const NEIGHBOURS: [number, number][] = [
+  [0, -1], [1, 0], [0, 1], [-1, 0],
+  [1, -1], [1, 1], [-1, 1], [-1, -1],
+];
 
 const STEP: Record<Facing, Vec2> = {
   up: { x: 0, y: -1 },
@@ -116,6 +121,8 @@ export class World {
       heldItem: null,
       hover: null,
       busy: false,
+      focus: null,
+      choiceIndex: 0,
       inventory: [],
       room: this.state.room,
     });
@@ -159,9 +166,11 @@ export class World {
     this.#runner = runner;
   }
 
-  /** Enter the current room. Call once after construction or load(). */
+  /** Enter the starting room and run its onEnter. Call once after construction. */
   start(): void {
     this.#enter(this.state.room);
+    const { onEnter } = this.room;
+    if (onEnter) void this.#busy(() => this.runHandler(onEnter, { world: this, target: this.room.id, verb: "enter" }));
   }
 
   /** Advance world time. Drive this from the renderer's ticker or a server loop. */
@@ -282,14 +291,102 @@ export class World {
     }
     const id = target.kind === "hotspot" ? target.hotspot.id : target.id;
     const { verb, heldItem } = this.ui.get();
-    const chosen =
-      verbOverride ??
-      (verb !== "walk"
-        ? verb
-        : target.kind === "hotspot"
-          ? (target.hotspot.default ?? this.game.defaultVerb ?? "look")
-          : "talk");
-    await this.interact(id, chosen, heldItem ?? undefined);
+    await this.interact(id, verbOverride ?? (verb !== "walk" ? verb : this.defaultVerbFor(id)), heldItem ?? undefined);
+  }
+
+  /** The verb a plain tap/A-press uses on a hotspot or actor. */
+  defaultVerbFor(id: string): VerbId {
+    const hotspot = this.room.hotspots.find((h) => h.id === id);
+    if (hotspot) return hotspot.default ?? this.game.defaultVerb ?? "look";
+    return "talk";
+  }
+
+  // ------------------------------------------------------------ focus input
+
+  /**
+   * Interactable things near an actor, nearest first: visible hotspots, plus
+   * other actors that have verbs. Distance is in room pixels from the actor's
+   * foot point to the target (hotspot stand point or shape centre).
+   */
+  targetsNear(from = this.player, maxDistance = Infinity): { id: string; name: string; distance: number }[] {
+    const origin = this.actorViews().find((v) => v.id === from)?.screen;
+    if (!origin) return [];
+    const out: { id: string; name: string; distance: number }[] = [];
+    for (const h of this.hotspots()) {
+      const c = shapeCenter(h.shape);
+      const stand = h.standAt ? this.projection.tileToScreen(h.standAt.x, h.standAt.y) : c;
+      const distance = Math.min(Math.hypot(c.x - origin.x, c.y - origin.y), Math.hypot(stand.x - origin.x, stand.y - origin.y));
+      out.push({ id: h.id, name: h.name, distance });
+    }
+    for (const v of this.actorViews()) {
+      const def = this.game.actors[v.id];
+      if (v.id === from || !v.visible || !def?.verbs) continue;
+      out.push({ id: v.id, name: def.name, distance: Math.hypot(v.screen.x - origin.x, v.screen.y - origin.y) });
+    }
+    return out.filter((t) => t.distance <= maxDistance).sort((a, b) => a.distance - b.distance);
+  }
+
+  setFocus(id: string | null): void {
+    this.ui.set({ focus: id });
+  }
+
+  /** Cycle focus through targetsNear(), nearest first. */
+  focusNext(step = 1, maxDistance = Infinity): string | null {
+    const ids = this.targetsNear(this.player, maxDistance).map((t) => t.id);
+    if (!ids.length) {
+      this.setFocus(null);
+      return null;
+    }
+    const i = ids.indexOf(this.ui.get().focus ?? "");
+    const next = ids[(i + step + ids.length) % ids.length]!;
+    this.setFocus(next);
+    return next;
+  }
+
+  /** Act on the focused target: its default verb, or the given one. */
+  async activateFocus(verb?: VerbId): Promise<void> {
+    const id = this.ui.get().focus;
+    if (!id || this.ui.get().busy) return;
+    const { heldItem } = this.ui.get();
+    await this.interact(id, verb ?? this.defaultVerbFor(id), heldItem ?? undefined);
+  }
+
+  /** Move the highlighted choice (gamepad/keyboard). */
+  moveChoice(delta: number): void {
+    const { choices, choiceIndex } = this.ui.get();
+    if (!choices.length) return;
+    this.ui.set({ choiceIndex: (choiceIndex + delta + choices.length) % choices.length });
+  }
+
+  confirmChoice(): void {
+    const { choices, choiceIndex } = this.ui.get();
+    const c = choices[choiceIndex];
+    if (c) this.choose(c.index);
+  }
+
+  /**
+   * Walk one step in a screen-space direction (stick or d-pad), in any
+   * projection: picks the walkable neighbour tile whose on-screen direction is
+   * closest. Returns null if there's nowhere to go or the actor is mid-step.
+   */
+  stepToward(id: string, dir: Vec2): Promise<boolean> | null {
+    const len = Math.hypot(dir.x, dir.y);
+    if (!len || !this.#grid.hasCharacter(id) || this.#grid.isMoving(id)) return null;
+    const from = this.tileOf(id);
+    const origin = this.projection.tileToScreen(from.x, from.y);
+    const diagonals = (this.room.directions ?? 4) === 8;
+    let best: { tile: TilePos; score: number } | null = null;
+    for (const [dx, dy] of NEIGHBOURS) {
+      if (!diagonals && dx !== 0 && dy !== 0) continue;
+      const tile = { x: from.x + dx, y: from.y + dy };
+      if (!this.walkmap.walkable(tile.x, tile.y) || this.#grid.isBlocked(tile, CHAR_LAYER)) continue;
+      const s = this.projection.tileToScreen(tile.x, tile.y);
+      const sx = s.x - origin.x;
+      const sy = s.y - origin.y;
+      const score = (sx * dir.x + sy * dir.y) / (Math.hypot(sx, sy) * len);
+      if (score > 0.5 && (!best || score > best.score)) best = { tile, score };
+    }
+    return best ? this.walk(id, best.tile) : null;
   }
 
   // ------------------------------------------------------------ interaction
@@ -347,10 +444,20 @@ export class World {
   // ---------------------------------------------------------------- actions
 
   /** Pathfind to a tile; resolves true if the actor got there, false if it stopped short. */
-  walk(id: string, to: TilePos): Promise<boolean> {
+  walk(id: string, dest: TilePos): Promise<boolean> {
     if (!this.#grid.hasCharacter(id)) return Promise.resolve(false);
     const from = this.tileOf(id);
-    if (from.x === to.x && from.y === to.y) return Promise.resolve(true);
+    if (from.x === dest.x && from.y === dest.y) return Promise.resolve(true);
+    // Walking "to" an occupied tile (an NPC, a prop) means walking next to it. If we're
+    // already beside it there's nothing to do; grid-engine would otherwise never finish.
+    let to = dest;
+    if (this.#grid.isBlocked(dest, CHAR_LAYER)) {
+      if (this.#adjacent(from, dest)) return Promise.resolve(false);
+      const beside = this.#freeNeighbours(dest).sort(
+        (a, b) => Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y),
+      )[0];
+      if (beside) to = beside;
+    }
     this.events.emit("walk", { actor: id, to });
     return new Promise((resolve) => {
       let settled = false;
@@ -394,6 +501,19 @@ export class World {
     this.events.emit("actorRemoved", { actor: id });
   }
 
+  #adjacent(a: TilePos, b: TilePos): boolean {
+    const dx = Math.abs(a.x - b.x);
+    const dy = Math.abs(a.y - b.y);
+    return (this.room.directions ?? 4) === 8 ? Math.max(dx, dy) === 1 : dx + dy === 1;
+  }
+
+  #freeNeighbours(t: TilePos): TilePos[] {
+    const diagonals = (this.room.directions ?? 4) === 8;
+    return NEIGHBOURS.filter(([dx, dy]) => diagonals || dx === 0 || dy === 0)
+      .map(([dx, dy]) => ({ x: t.x + dx, y: t.y + dy }))
+      .filter((n) => this.walkmap.walkable(n.x, n.y) && !this.#grid.isBlocked(n, CHAR_LAYER));
+  }
+
   face(id: string, facing: Facing): void {
     if (this.#grid.hasCharacter(id)) this.#grid.turnTowards(id, facing as unknown as Direction);
     const a = this.state.actors[id];
@@ -432,7 +552,7 @@ export class World {
 
   /** Offer choices and wait for choose(). */
   ask(choices: DialogChoice[]): Promise<number> {
-    this.ui.set({ choices, line: null });
+    this.ui.set({ choices, line: null, choiceIndex: 0 });
     return new Promise<number>((resolve) => {
       this.#choiceResolve = (i) => {
         this.#choiceResolve = null;
@@ -542,8 +662,9 @@ export class World {
           speed: this.game.actors[id]?.speed ?? 4,
         };
       }),
+      numberOfDirections: (room.directions ?? 4) as unknown as NumberOfDirections,
     });
-    this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null });
+    this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null, focus: null });
     this.events.emit("roomChanged", { room, projection: this.projection });
     if (room.music) this.events.emit("music", { key: room.music });
   }

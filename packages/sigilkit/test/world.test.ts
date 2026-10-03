@@ -169,3 +169,83 @@ describe("tileArea", () => {
     }
   });
 });
+
+describe("non-pointer input", () => {
+  it("steps toward a screen direction, diagonally in 8-direction iso rooms", async () => {
+    const iso = defineGame({
+      ...game,
+      startRoom: "plaza",
+      startEntry: undefined,
+      rooms: {
+        plaza: {
+          id: "plaza",
+          projection: "isometric",
+          directions: 8,
+          tile: { width: 32, height: 16 },
+          walkmap: ["....", "....", "....", "...."],
+          entries: { mid: { at: { x: 2, y: 2 } } },
+          hotspots: [],
+        },
+      },
+    });
+    const w = new World(iso);
+    w.start();
+    // Screen-up in a diamond iso room is the grid diagonal (-1, -1).
+    await run(w, w.stepToward("hero", { x: 0, y: -1 })!);
+    expect(w.tileOf("hero")).toEqual({ x: 1, y: 1 });
+    // Screen-right is (+1, -1).
+    await run(w, w.stepToward("hero", { x: 1, y: 0 })!);
+    expect(w.tileOf("hero")).toEqual({ x: 2, y: 0 });
+    // Off the edge: nowhere to go.
+    expect(w.stepToward("hero", { x: 0, y: -1 })).toBeNull();
+  });
+
+  it("lists targets nearest first and cycles focus", () => {
+    const w = new World(game);
+    w.start();
+    const ids = w.targetsNear().map((t) => t.id);
+    expect(ids).toEqual(expect.arrayContaining(["door", "moth"]));
+    const first = w.focusNext();
+    expect(first).toBe(ids[0]);
+    expect(w.focusNext()).toBe(ids[1]);
+    expect(w.focusNext()).toBe(ids[0]);
+  });
+
+  it("activates the focused target with its default verb", async () => {
+    const w = new World(game);
+    w.start();
+    w.setFocus("door");
+    await run(w, w.activateFocus("look"));
+    expect(w.flag("looked")).toBe(true);
+  });
+
+  it("moves a choice cursor and confirms", async () => {
+    const w = new World(game);
+    w.start();
+    const picked = w.ask([{ index: 0, text: "a" }, { index: 1, text: "b" }, { index: 2, text: "c" }]);
+    w.moveChoice(-1);
+    expect(w.ui.get().choiceIndex).toBe(2);
+    w.confirmChoice();
+    expect(await picked).toBe(2);
+  });
+});
+
+describe("actor interaction", () => {
+  it("doesn't hang when already standing next to the actor", async () => {
+    const w = new World(game);
+    w.start();
+    w.place("hero", { x: 4, y: 2 }); // moth is at (5, 2)
+    let talked = false;
+    w.game.actors.moth!.verbs = { talk: () => void (talked = true) };
+    await run(w, w.interact("moth", "talk"), 2000);
+    expect(talked).toBe(true);
+  });
+
+  it("walks to a free tile beside an actor across the room", async () => {
+    const w = new World(game);
+    w.start();
+    expect(await run(w, w.walk("hero", { x: 5, y: 2 }))).toBe(true);
+    const at = w.tileOf("hero");
+    expect(Math.abs(at.x - 5) + Math.abs(at.y - 2)).toBe(1);
+  });
+});

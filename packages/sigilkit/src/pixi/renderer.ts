@@ -1,4 +1,4 @@
-import type { ActorView, HotspotDef, Projection, RoomDef, Vec2, World } from "../core/index";
+import type { ActorView, HotspotDef, Projection, PropDef, RoomDef, Vec2, World } from "../core/index";
 import {
   Application,
   Assets,
@@ -11,14 +11,42 @@ import {
   TextureStyle,
   type ApplicationOptions,
 } from "pixi.js";
-import type { ActorDisplay, ActorFactory } from "./actors";
+import type { ActorDisplay, ActorFactory, PropDisplay, PropFactory } from "./actors";
 
 export type Scaling = "integer" | "fit" | "auto";
+
+/**
+ * Look of the blockout floor drawn when a room has no background art.
+ * In the walkmap, '#' is wall (raised in isometric rooms); any other non-'.'
+ * character is blocked floor, for furniture and props that draw themselves.
+ */
+export interface BlockoutStyle {
+  floor: [number, number];
+  blocked: number;
+  wallTop: number;
+  wallLeft: number;
+  wallRight: number;
+  /** Pixels walls rise in isometric rooms. Default: one tile height. */
+  wallHeight?: number;
+}
+
+const DEFAULT_BLOCKOUT: BlockoutStyle = {
+  floor: [0x3b5b4a, 0x416551],
+  blocked: 0x1d2a2a,
+  wallTop: 0x35504a,
+  wallLeft: 0x2a3d3a,
+  wallRight: 0x223230,
+};
 
 export interface RendererOptions {
   host: HTMLElement;
   /** Builds the display for each actor's sprite key. */
   actors: ActorFactory;
+  /** Builds animated displays for room props. Props it skips use their static `asset`. */
+  props?: PropFactory;
+  /** Outline the focused hotspot or actor (gamepad/keyboard play). Default true. */
+  showFocus?: boolean;
+  focusColor?: number;
   /** Background/prop asset key -> URL. Rooms without a resolvable background get a blockout floor. */
   resolveAsset?: (key: string) => string | undefined;
   /**
@@ -29,6 +57,8 @@ export interface RendererOptions {
   scaling?: Scaling;
   /** Letterbox color. */
   background?: number;
+  /** Colors and wall height for rooms drawn without background art. */
+  blockout?: Partial<BlockoutStyle>;
   /** Draw walkmap and hotspot outlines. */
   debug?: boolean;
   /**
@@ -52,6 +82,12 @@ export interface Renderer {
   /** Room pixels to client coordinates, for placing DOM overlays (verb coin, tooltips). */
   toClient(room: Vec2): Vec2;
   setDebug(on: boolean): void;
+  /**
+   * Extra layers for game effects. `world` is in room pixels, above actors and
+   * props (follows the camera). `overlay` is in logical-resolution pixels over
+   * the whole frame (vignettes, flashes, HUD-in-canvas).
+   */
+  readonly layers: { world: Container; overlay: Container };
   destroy(): void;
 }
 
@@ -81,8 +117,11 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   const debugLayer = new Graphics();
   const entities = new Container({ sortableChildren: true });
   const speech = new Container();
-  camera.addChild(floor, debugLayer, entities, speech);
-  frame.addChild(mask, camera);
+  const focusLayer = new Graphics();
+  const worldFx = new Container();
+  const overlay = new Container();
+  camera.addChild(floor, debugLayer, entities, focusLayer, worldFx, speech);
+  frame.addChild(mask, camera, overlay);
   frame.mask = mask;
   app.stage.addChild(frame);
 
@@ -110,6 +149,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   // ------------------------------------------------------------------ room
   const displays = new Map<string, ActorDisplay>();
   const props: Sprite[] = [];
+  const propDisplays: PropDisplay[] = [];
   const blocks: Graphics[] = [];
   let roomBounds = { x: 0, y: 0, width: W, height: H };
   let debug = opts.debug ?? false;
@@ -119,6 +159,8 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
     displays.clear();
     for (const p of props) p.destroy();
     props.length = 0;
+    for (const p of propDisplays) p.destroy();
+    propDisplays.length = 0;
     floor.removeChildren().forEach((c) => c.destroy());
     for (const b of blocks) b.destroy();
     blocks.length = 0;
@@ -147,7 +189,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       floor.addChild(new Sprite(bg));
       if (!room.size) roomBounds = { x: 0, y: 0, width: bg.width, height: bg.height };
     } else {
-      const b = blockout(room, projection, grid);
+      const b = blockout(room, projection, grid, { ...DEFAULT_BLOCKOUT, ...opts.blockout });
       floor.addChild(b.floor);
       for (const g of b.blocks) {
         entities.addChild(g);
@@ -155,12 +197,27 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       }
     }
     for (const p of room.props ?? []) {
-      const tex = await loadTexture(p.asset);
+      const display = opts.props?.(p, { world, projection });
+      if (display) {
+        const pos = propPosition(p, projection);
+        display.view.position.set(pos.x, pos.y);
+        display.view.zIndex = propDepth(p, projection, pos.y);
+        entities.addChild(display.view);
+        propDisplays.push(display);
+        continue;
+      }
+      const tex = p.asset ? await loadTexture(p.asset) : null;
+      if (destroyed || world.room !== room) return;
       if (!tex) continue;
       const s = new Sprite(tex);
-      s.position.set(p.at.x, p.at.y);
-      const foot = p.depthTile ? projection.tileToScreen(p.depthTile.x, p.depthTile.y).y : p.at.y + tex.height;
-      s.zIndex = foot;
+      if (p.at) s.position.set(p.at.x, p.at.y);
+      else if (p.tile) {
+        // Tile-placed art stands on the tile's foot point.
+        s.anchor.set(0.5, 1);
+        const pos = projection.tileToScreen(p.tile.x, p.tile.y);
+        s.position.set(pos.x, pos.y);
+      }
+      s.zIndex = p.depthTile || p.tile ? propDepth(p, projection, 0) : s.y + tex.height;
       entities.addChild(s);
       props.push(s);
     }
@@ -218,6 +275,29 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
     speechText.visible = true;
   };
 
+  // ----------------------------------------------------------------- focus
+  let focusKey = "";
+  let focusT = 0;
+  const drawFocus = (views: ActorView[], dt: number) => {
+    const id = (opts.showFocus ?? true) ? world.ui.get().focus : null;
+    const view = id ? views.find((v) => v.id === id) : undefined;
+    const key = id ? `${world.room.id}:${id}:${view ? `${Math.round(view.screen.x)},${Math.round(view.screen.y)}` : ""}` : "";
+    if (key !== focusKey) {
+      focusKey = key;
+      focusLayer.clear();
+      const color = opts.focusColor ?? 0xffe066;
+      const hotspot = id ? world.hotspots().find((h) => h.id === id) : undefined;
+      if (hotspot) {
+        drawShape(focusLayer, hotspot).fill({ color, alpha: 0.12 }).stroke({ width: 1, color, alpha: 1 });
+      } else if (view) {
+        const w = world.room.tile.width * 0.45;
+        focusLayer.ellipse(view.screen.x, view.screen.y, w, w / 2).stroke({ width: 1, color, alpha: 1 });
+      }
+    }
+    focusT += dt;
+    focusLayer.alpha = 0.55 + 0.45 * Math.sin(focusT / 220) ** 2;
+  };
+
   // ---------------------------------------------------------------- camera
   const follow = (views: ActorView[]) => {
     const target = views.find((v) => v.id === world.player)?.screen ?? { x: W / 2, y: H / 2 };
@@ -254,8 +334,10 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
         displays.delete(id);
       }
     }
+    for (const p of propDisplays) p.update?.(dt, world);
     follow(views);
     updateSpeech(views);
+    drawFocus(views, dt);
   };
   app.ticker.add(tick);
 
@@ -328,6 +410,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       const r = app.canvas.getBoundingClientRect();
       return { x: g.x + r.left, y: g.y + r.top };
     },
+    layers: { world: worldFx, overlay },
     setDebug: (on) => {
       debug = on;
       drawDebug();
@@ -359,6 +442,16 @@ function tileOutline(p: Projection, x: number, y: number): number[] {
   return [a.x, a.y, c.x, a.y, c.x, c.y, a.x, c.y];
 }
 
+function propPosition(p: PropDef, projection: Projection): Vec2 {
+  if (p.tile) return projection.tileToScreen(p.tile.x, p.tile.y);
+  return p.at ?? { x: 0, y: 0 };
+}
+
+function propDepth(p: PropDef, projection: Projection, fallbackY: number): number {
+  const t = p.depthTile ?? p.tile;
+  return t ? projection.tileToScreen(t.x, t.y).y : fallbackY;
+}
+
 function drawShape(g: Graphics, h: HotspotDef): Graphics {
   if ("rect" in h.shape) return g.rect(...h.shape.rect);
   return g.poly(h.shape.polygon);
@@ -366,29 +459,28 @@ function drawShape(g: Graphics, h: HotspotDef): Graphics {
 
 /**
  * Flat-shaded floor straight from the walkmap, for rooms without art yet.
- * Blocked isometric tiles become raised blocks that depth-sort with actors.
+ * '#' tiles become raised walls in isometric rooms and depth-sort with actors.
  */
-function blockout(room: RoomDef, p: Projection, grid: World["walkmap"]): { floor: Graphics; blocks: Graphics[] } {
+function blockout(room: RoomDef, p: Projection, grid: World["walkmap"], style: BlockoutStyle): { floor: Graphics; blocks: Graphics[] } {
   const floor = new Graphics();
   const blocks: Graphics[] = [];
-  const walk = [0x3b5b4a, 0x416551];
-  const wall = 0x1d2a2a;
   for (let y = 0; y < grid.rows; y++)
     for (let x = 0; x < grid.cols; x++) {
       const pts = tileOutline(p, x, y);
       const open = grid.walkable(x, y);
-      floor.poly(pts).fill(open ? walk[(x + y) % 2]! : wall);
-      if (open || p.kind !== "isometric") continue;
-      const lift = room.tile.height;
+      const wall = room.walkmap[y]?.[x] === "#";
+      floor.poly(pts).fill(open ? style.floor[(x + y) % 2]! : wall ? style.wallTop : style.blocked);
+      if (!wall || p.kind !== "isometric") continue;
+      const lift = style.wallHeight ?? room.tile.height;
       const [tx, ty, rx, ry, bx, by, lx, ly] = pts as [number, number, number, number, number, number, number, number];
       const g = new Graphics()
         .poly([lx, ly, bx, by, bx, by - lift, lx, ly - lift])
-        .fill(0x2a3d3a)
+        .fill(style.wallLeft)
         .poly([bx, by, rx, ry, rx, ry - lift, bx, by - lift])
-        .fill(0x223230)
+        .fill(style.wallRight)
         .poly([tx, ty - lift, rx, ry - lift, bx, by - lift, lx, ly - lift])
-        .fill(0x35504a);
-      // Sort by the tile centre, same key actors use, so a block in front of an actor covers it.
+        .fill(style.wallTop);
+      // Sort by the tile centre, same key actors use, so a wall in front of an actor covers it.
       g.zIndex = p.tileToScreen(x, y).y;
       blocks.push(g);
     }

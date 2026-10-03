@@ -13,6 +13,7 @@ sigilkit/story/vite   Vite plugin that compiles .ink imports    (peer: vite)
 sigilkit/pixi         PixiJS v8 renderer: backgrounds, depth-sorted actors, picking, scaling, camera   (peer: pixi.js)
 sigilkit/react        <Stage>, hooks, unstyled default UI (dialog, choices, verbs, inventory, verb coin)   (peer: react)
 sigilkit/audio        Web Audio: crossfading music, sfx, ducking under dialog
+sigilkit/input        gamepad + keyboard "couch" controls: stick walking, focus, dialog navigation
 sigilkit/net          protocol types + auth verifiers
 sigilkit/net/server   PartyServer room + Worker handler          (peer: partyserver)
 sigilkit/net/client   partysocket client                         (peer: partysocket)
@@ -85,6 +86,19 @@ tap/click ──► world.activate(point)
 - **Items:** select one in the inventory, tap a target, and `items[id].with[target]` runs. The sentence line reads "Use watering can with dry planter".
 - **No handler** makes the player say `game.fallback(verb, target)`.
 
+### Gamepad and keyboard (`sigilkit/input`)
+
+Pointer play targets things directly; couch play needs a cursor-free model. `Navigator` provides it, and `startGamepad` / `startKeyboard` drive it:
+
+- **Walking** steps one tile at a time toward a screen-space direction (`world.stepToward`), so "stick up" means up on screen in any projection. Isometric rooms should set `directions: 8` so screen-up is a single diagonal step.
+- **Focus** follows the nearest hotspot or verb-bearing actor within range while you walk. LB/RB (Tab on keyboard) cycle by hand, and the renderer outlines the focused target. Focus switches off while the last-used device is a pointer.
+- **Acting:** A/Enter uses the focused target's default verb, X/L looks, B/Esc clears focus or drops a held item.
+- **Dialog:** A advances lines; the stick or d-pad moves the choice cursor (`ui.choiceIndex`).
+- **Game modes** hook in without forking the driver. `onButton` can consume any press (the spell distaff in Nascent Genesis holds LT and turns the d-pad and face buttons into notes), and `onFrame` can suppress movement while a mode owns the pad.
+- **Prompts:** `inputMode` records which device was used last (gamepad, keyboard or pointer) so the UI can show matching button glyphs.
+
+Gamepad logic runs on plain `PadSnapshot` objects, so it's unit-tested without the Gamepad API.
+
 ### Commands
 
 Commands are the verbs of scripting, usable from Ink (`>>> walk wren 4 6`), from TS (`world.command("walk wren 4 6")`) or as methods (`world.walk(...)`). Built-ins: `walk face say wait goto give take set show hide place music sfx`. Add your own with `world.commands.set(name, fn)`; async commands are awaited, so cutscenes are just sequential lines.
@@ -127,6 +141,12 @@ The game renders at a fixed logical resolution (`game.resolution`, e.g. 320x180)
 Default UI docks below the stage. Dialog and choices float over the bottom edge of the stage so the stage never reflows mid-conversation; on short landscape phones the whole panel overlays.
 
 Dialog defaults to the DOM box: it scales with system font settings and reaches screen readers. `overheadSpeech: true` gives SCUMM-style text above the speaker.
+
+### Props, layers and the blockout
+
+- **Animated props:** `RoomDef.props` entries can be placed by `tile` (fractional tiles centre a prop across several) and given an `id`. A renderer `props` factory returns a `PropDisplay` for any of them; it's updated every frame with the world, and depth-sorts with actors. Props the factory skips fall back to their static `asset`. This is how scenery reacts to game state without becoming fake actors.
+- **Effect layers:** `renderer.layers.world` is in room pixels above actors (particles, auras) and follows the camera; `renderer.layers.overlay` covers the frame in logical pixels (tints, flashes, static).
+- **Blockout:** rooms without art draw from the walkmap. `'#'` is wall, raised in isometric rooms; other non-`'.'` characters are blocked floor under furniture. `blockout: { floor, blocked, wallTop, wallLeft, wallRight, wallHeight }` sets the palette.
 
 ## Multiplayer (optional)
 

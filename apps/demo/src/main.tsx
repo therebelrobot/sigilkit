@@ -1,5 +1,6 @@
 import { AudioDirector } from "sigilkit/audio";
 import { World, type WorldState } from "sigilkit";
+import { startGamepad } from "sigilkit/input";
 import { connect } from "sigilkit/net/client";
 import { placeholderActor } from "sigilkit/pixi";
 import { GameProvider, GameShell, Stage, useRenderer, useWorld } from "sigilkit/react";
@@ -15,6 +16,9 @@ const world = new World(game);
 new InkRunner(world, story);
 world.events.on("error", ({ error, context }) => console.error(`[${context}]`, error));
 world.start();
+
+// Controller play: stick walks, A uses, X looks, LB/RB cycle focus.
+startGamepad(world);
 
 // Drop .ogg files in public/audio/<key>.ogg (e.g. door, pour) and they just play.
 const audio = new AudioDirector(world, { resolve: (key) => `/audio/${key}.ogg` });

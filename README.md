@@ -11,6 +11,7 @@ import { ink } from "sigilkit/story/vite";          // Vite plugin for .ink impo
 import { createRenderer } from "sigilkit/pixi";     // + pixi.js
 import { GameShell, Stage } from "sigilkit/react";  // + react; "sigilkit/react/styles.css" for defaults
 import { AudioDirector } from "sigilkit/audio";
+import { startGamepad } from "sigilkit/input";      // controller + keyboard couch play
 import { connect } from "sigilkit/net/client";      // + partysocket
 import { RoomServer } from "sigilkit/net/server";   // + partyserver, in a Cloudflare Worker
 ```
@@ -110,6 +111,7 @@ packages/
     pixi/       PixiJS v8 renderer                                         -> "sigilkit/pixi"
     react/      Stage, hooks, default UI, styles.css                       -> "sigilkit/react"
     audio/      Web Audio music/sfx                                        -> "sigilkit/audio"
+    input/      gamepad + keyboard: stick walking, focus, dialog nav       -> "sigilkit/input"
     net/        PartyServer room, client, Better Auth verifiers            -> "sigilkit/net", "/server", "/client"
   phaser-shim/  satisfies grid-engine's phaser import (see ARCHITECTURE: known issue)
 apps/

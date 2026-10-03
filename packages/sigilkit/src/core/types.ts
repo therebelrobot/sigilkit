@@ -88,22 +88,42 @@ export interface RoomDef {
   tile: { width: number; height: number };
   /**
    * Walk grid, one string per row. '.' walkable, anything else blocked.
+   * By convention '#' is wall (the blockout renderer raises it in isometric
+   * rooms) and other characters are blocked floor under furniture.
    * SCUMM-style rooms paint the art separately and use this only for walkability.
    */
   walkmap: string[];
   /** Pixel offset of tile (0,0)'s reference corner inside the room art. */
   origin?: Vec2;
+  /**
+   * Movement directions. 8 allows diagonal steps, which makes stick control in
+   * isometric rooms feel right (screen-up is a grid diagonal). Default 4.
+   */
+  directions?: 4 | 8;
   /** Room size in pixels; defaults to the background size or the grid's bounds. */
   size?: { width: number; height: number };
   background?: string;
-  /** Art drawn over actors (pillars, foliage) that should still depth-sort. */
-  props?: { asset: string; at: Vec2; depthTile?: TilePos }[];
+  /** Scenery that depth-sorts with actors: static art, or animated displays from the renderer's prop factory. */
+  props?: PropDef[];
   hotspots: HotspotDef[];
   actors?: Record<string, ActorPlacement>;
   /** Named arrival points for goto(room, entry). */
   entries?: Record<string, ActorPlacement>;
   music?: string;
   onEnter?: Handler;
+}
+
+export interface PropDef {
+  /** Lets a prop factory (or game code) recognise this prop. */
+  id?: string;
+  /** Static art. Optional when a prop factory draws it. */
+  asset?: string;
+  /** Top-left in room pixels (static art), or... */
+  at?: Vec2;
+  /** ...the tile it stands on; drawn at that tile's foot point. */
+  tile?: TilePos;
+  /** Tile used for depth sorting; defaults to `tile`, or the art's bottom edge. */
+  depthTile?: TilePos;
 }
 
 export interface ItemDef {
@@ -169,6 +189,10 @@ export interface UiState {
   hover: string | null;
   /** True while a script runs; input to the world is ignored. */
   busy: boolean;
+  /** Hotspot or actor targeted by non-pointer input (gamepad, keyboard). */
+  focus: string | null;
+  /** Highlighted choice for non-pointer input. */
+  choiceIndex: number;
   inventory: string[];
   room: string;
 }

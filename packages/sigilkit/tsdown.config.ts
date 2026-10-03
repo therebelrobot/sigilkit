@@ -7,6 +7,7 @@ export default defineConfig({
     "story/index": "src/story/index.ts",
     "story/vite": "src/story/vite.ts",
     "audio/index": "src/audio/index.ts",
+    "input/index": "src/input/index.ts",
     "pixi/index": "src/pixi/index.ts",
     "react/index": "src/react/index.tsx",
     "net/index": "src/net/index.ts",

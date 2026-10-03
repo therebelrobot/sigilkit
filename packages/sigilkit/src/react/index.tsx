@@ -152,12 +152,14 @@ export function DialogBox({ className = "vc-dialog" }: { className?: string }) {
 
 export function ChoiceList({ className = "vc-choices" }: { className?: string }) {
   const { choices, choose } = useDialog();
+  const { choiceIndex } = useUi();
   if (!choices.length) return null;
   return (
     <ol className={className}>
-      {choices.map((c) => (
+      {choices.map((c, i) => (
         <li key={c.index}>
-          <button type="button" onClick={() => choose(c.index)}>
+          {/* aria-current marks the gamepad/keyboard cursor; pointer users just click. */}
+          <button type="button" aria-current={i === choiceIndex || undefined} onClick={() => choose(c.index)}>
             {c.text}
           </button>
         </li>
@@ -207,9 +209,12 @@ export function InventoryBar({
 /** "Use key with Door"-style sentence line. */
 export function SentenceLine({ className = "vc-sentence" }: { className?: string }) {
   const world = useWorld();
-  const { verb, hover, heldItem } = useUi();
+  const { verb, hover, heldItem, focus } = useUi();
   const item = heldItem ? (world.game.items?.[heldItem]?.name ?? heldItem) : null;
-  const text = item ? `Use ${item} with ${hover ?? ""}` : verb === "walk" ? (hover ?? "") : `${cap(verb)} ${hover ?? ""}`;
+  // Pointer hover wins; otherwise name what gamepad/keyboard focus is on.
+  const focusName = focus ? (world.hotspots().find((h) => h.id === focus)?.name ?? world.game.actors[focus]?.name ?? null) : null;
+  const target = hover ?? focusName;
+  const text = item ? `Use ${item} with ${target ?? ""}` : verb === "walk" ? (target ?? "") : `${cap(verb)} ${target ?? ""}`;
   return <div className={className}>{text.trim() || " "}</div>;
 }
 

@@ -69,7 +69,8 @@
 .vc-dialog-speaker { font-weight: 700; }
 .vc-choices { list-style: none; display: grid; gap: 4px; }
 .vc-choices button { width: 100%; text-align: left; border-color: var(--vc-muted); }
-.vc-choices button:hover { color: var(--vc-accent); }
+.vc-choices button:hover,
+.vc-choices button[aria-current="true"] { color: var(--vc-accent); border-color: var(--vc-accent); }
 .vc-sentence { color: var(--vc-accent); min-height: 1.4em; }
 .vc-verbs, .vc-inventory { display: flex; flex-wrap: wrap; gap: 4px; }
 .vc-verbs button { text-transform: capitalize; color: var(--vc-muted); }

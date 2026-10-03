@@ -1,4 +1,4 @@
-import type { ActorView, Facing } from "../core/index";
+import type { ActorView, Facing, Projection, PropDef, World } from "../core/index";
 import { Container, Graphics, Rectangle, Sprite, Texture } from "pixi.js";
 
 /** How the renderer draws one actor. Swap in anything: spritesheets, Spine, a single PNG. */
@@ -9,6 +9,19 @@ export interface ActorDisplay {
 }
 
 export type ActorFactory = (spriteKey: string, actorId: string) => ActorDisplay;
+
+/** An animated piece of scenery. Updated every frame; depth-sorted with actors. */
+export interface PropDisplay {
+  readonly view: Container;
+  update?(deltaMs: number, world: World): void;
+  destroy(): void;
+}
+
+/**
+ * Builds displays for a room's props. Return null to fall back to the prop's
+ * static `asset` (or draw nothing if it has none).
+ */
+export type PropFactory = (prop: PropDef, ctx: { world: World; projection: Projection }) => PropDisplay | null | undefined;
 
 /** Colored stand-in with a facing nub and a walk bob, so you can block out rooms before art exists. */
 export function placeholderActor(color: number, size = 14): ActorDisplay {

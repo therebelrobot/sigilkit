@@ -47,6 +47,11 @@
       "types": "./dist/audio/index.d.ts",
       "default": "./dist/audio/index.js"
     },
+    "./input": {
+      "sigilkit-source": "./src/input/index.ts",
+      "types": "./dist/input/index.d.ts",
+      "default": "./dist/input/index.js"
+    },
     "./pixi": {
       "sigilkit-source": "./src/pixi/index.ts",
       "types": "./dist/pixi/index.d.ts",
