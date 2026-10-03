@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      pixi: { patterns: ["pixi.js", "@pixi/*"] }
+      cloudflare: { patterns: ["wrangler", "@cloudflare/*", "partyserver", "partysocket"] }
+      tooling: { patterns: ["typescript", "tsdown", "vitest", "vite", "@vitejs/*", "tsx", "@types/*"] }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }

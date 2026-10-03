@@ -1,0 +1,21 @@
+{
+  "name": "sigilkit-party",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Unlicense",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typegen": "wrangler types"
+  },
+  "dependencies": {
+    "partyserver": "^0.5.10",
+    "sigilkit": "0.1.0",
+    "sigilkit-demo": "0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261003.1",
+    "wrangler": "^4.147.0"
+  }
+}

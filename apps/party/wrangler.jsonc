@@ -1,0 +1,17 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "sigilkit-party",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Bundle workspace packages from TypeScript source, as the demo does; no build step needed.
+  "alias": {
+    "sigilkit": "../../packages/sigilkit/src/core/index.ts",
+    "sigilkit/net/server": "../../packages/sigilkit/src/net/server.ts",
+    "sigilkit-demo/game": "../demo/src/game.ts"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "Rooms", "class_name": "Rooms" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Rooms"] }]
+}

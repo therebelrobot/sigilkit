@@ -1,0 +1,85 @@
+/* Default look for sigilkit/react. Every rule targets a vc-* class, so override freely. */
+.vc-shell {
+  --vc-bg: #0d1412;
+  --vc-panel: #16211e;
+  --vc-ink: #e9efe6;
+  --vc-muted: #8ea398;
+  --vc-accent: #c8e86a;
+  --vc-font: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  background: var(--vc-bg);
+  color: var(--vc-ink);
+  font-family: var(--vc-font);
+  user-select: none;
+  -webkit-user-select: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.vc-shell-stage { min-height: 0; }
+.vc-shell-ui {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  background: var(--vc-panel);
+}
+@media (orientation: landscape) and (max-height: 520px) {
+  /* Short landscape phones: overlay instead of stealing height from the stage. */
+  .vc-shell { grid-template-rows: 1fr; }
+  .vc-shell-stage { grid-area: 1 / 1; }
+  .vc-shell-ui { grid-area: 1 / 1; align-self: end; background: color-mix(in srgb, var(--vc-panel) 85%, transparent); }
+}
+.vc-shell button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 6px 10px;
+  min-height: 40px;
+  cursor: pointer;
+}
+.vc-shell button:focus-visible { outline: 2px solid var(--vc-accent); outline-offset: 1px; }
+/* Dialog and choices float over the bottom of the stage so the stage never reflows mid-conversation. */
+.vc-dialog,
+.vc-choices {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  max-width: 720px;
+  margin: 0 auto;
+  background: color-mix(in srgb, var(--vc-panel) 92%, transparent);
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 4px 24px rgb(0 0 0 / 0.4);
+}
+.vc-dialog {
+  display: flex !important;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 2px;
+  border-color: var(--vc-muted) !important;
+  line-height: 1.4;
+}
+.vc-dialog-speaker { font-weight: 700; }
+.vc-choices { list-style: none; display: grid; gap: 4px; }
+.vc-choices button { width: 100%; text-align: left; border-color: var(--vc-muted); }
+.vc-choices button:hover { color: var(--vc-accent); }
+.vc-sentence { color: var(--vc-accent); min-height: 1.4em; }
+.vc-verbs, .vc-inventory { display: flex; flex-wrap: wrap; gap: 4px; }
+.vc-verbs button { text-transform: capitalize; color: var(--vc-muted); }
+.vc-verbs button[aria-pressed="true"], .vc-inventory button[aria-pressed="true"] { color: var(--vc-accent); border-color: var(--vc-accent); }
+.vc-inventory button { border-color: color-mix(in srgb, var(--vc-muted) 50%, transparent); }
+.vc-inventory:empty { display: none; }
+.vc-coin button {
+  background: var(--vc-panel);
+  border: 1px solid var(--vc-accent);
+  border-radius: 999px;
+  min-width: 56px;
+  text-transform: capitalize;
+}

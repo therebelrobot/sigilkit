@@ -1,0 +1,116 @@
+{
+  "name": "sigilkit",
+  "version": "0.1.0",
+  "description": "Composable 2D adventure engine for React in the spirit of SCUMM: painted rooms, point-and-click verbs, Ink story, orthogonal and isometric rooms, optional PartyServer multiplayer. Import only the parts you use.",
+  "license": "Unlicense",
+  "type": "module",
+  "keywords": [
+    "game-engine",
+    "adventure",
+    "point-and-click",
+    "scumm",
+    "ink",
+    "pixijs",
+    "react",
+    "isometric",
+    "partykit"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
+  "files": [
+    "dist",
+    "src/react/styles.css"
+  ],
+  "exports": {
+    ".": {
+      "sigilkit-source": "./src/core/index.ts",
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    },
+    "./story": {
+      "sigilkit-source": "./src/story/index.ts",
+      "types": "./dist/story/index.d.ts",
+      "default": "./dist/story/index.js"
+    },
+    "./story/vite": {
+      "sigilkit-source": "./src/story/vite.ts",
+      "types": "./dist/story/vite.d.ts",
+      "default": "./dist/story/vite.js"
+    },
+    "./audio": {
+      "sigilkit-source": "./src/audio/index.ts",
+      "types": "./dist/audio/index.d.ts",
+      "default": "./dist/audio/index.js"
+    },
+    "./pixi": {
+      "sigilkit-source": "./src/pixi/index.ts",
+      "types": "./dist/pixi/index.d.ts",
+      "default": "./dist/pixi/index.js"
+    },
+    "./react": {
+      "sigilkit-source": "./src/react/index.tsx",
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./net": {
+      "sigilkit-source": "./src/net/index.ts",
+      "types": "./dist/net/index.d.ts",
+      "default": "./dist/net/index.js"
+    },
+    "./net/server": {
+      "sigilkit-source": "./src/net/server.ts",
+      "types": "./dist/net/server.d.ts",
+      "default": "./dist/net/server.js"
+    },
+    "./net/client": {
+      "sigilkit-source": "./src/net/client.ts",
+      "types": "./dist/net/client.d.ts",
+      "default": "./dist/net/client.js"
+    },
+    "./react/styles.css": "./src/react/styles.css"
+  },
+  "scripts": {
+    "build": "tsdown"
+  },
+  "dependencies": {
+    "grid-engine": "^2.52.1"
+  },
+  "peerDependencies": {
+    "inkjs": "^2.4.0",
+    "partyserver": "^0.5.10",
+    "partysocket": "^1.3.0",
+    "pixi.js": "^8.22.0",
+    "react": "^19.0.0",
+    "vite": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "inkjs": {
+      "optional": true
+    },
+    "partyserver": {
+      "optional": true
+    },
+    "partysocket": {
+      "optional": true
+    },
+    "pixi.js": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261003.1",
+    "@types/react": "^19.0.0",
+    "inkjs": "^2.4.0",
+    "partyserver": "^0.5.10",
+    "partysocket": "^1.3.0",
+    "pixi.js": "^8.22.0",
+    "react": "^19.3.0"
+  }
+}

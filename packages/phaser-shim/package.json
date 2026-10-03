@@ -1,0 +1,12 @@
+{
+  "name": "phaser",
+  "version": "4.0.0",
+  "private": true,
+  "description": "Shim that satisfies grid-engine's phaser peer dependency without loading Phaser. grid-engine's ESM bundle imports Tilemaps from phaser at module load, but only reads Tilemaps.Orientation inside its Phaser adapter, which headless use never calls.",
+  "license": "Unlicense",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./index.js"
+  }
+}

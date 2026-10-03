@@ -1,0 +1,27 @@
+name: release
+
+# Publishes every public workspace package when a v* tag is pushed
+# (npm run release:patch|minor|major creates and pushes one).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm trusted publishing (OIDC) + provenance; no NPM_TOKEN secret
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm publish --workspaces --access public --provenance

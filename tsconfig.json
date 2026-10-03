@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vite/client", "@cloudflare/workers-types"]
+  },
+  "include": [
+    "packages/sigilkit/src",
+    "packages/sigilkit/test",
+    "apps/demo/src",
+    "apps/party/src",
+    "scripts",
+    "vitest.config.ts"
+  ]
+}

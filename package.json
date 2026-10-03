@@ -1,20 +1,35 @@
 {
-  "name": "sigilkit",
-  "version": "0.0.1",
-  "description": "a 2d game engine",
-  "homepage": "https://github.com/therebelrobot/sigilkit#readme",
-  "bugs": {
-    "url": "https://github.com/therebelrobot/sigilkit/issues"
+  "name": "sigilkit-monorepo",
+  "private": true,
+  "type": "module",
+  "license": "Unlicense",
+  "engines": {
+    "node": ">=24"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+ssh://git@github.com/therebelrobot/sigilkit.git"
-  },
-  "license": "MIT",
-  "author": "",
-  "type": "commonjs",
-  "main": "index.js",
+  "workspaces": [
+    "packages/phaser-shim",
+    "packages/sigilkit",
+    "apps/demo",
+    "apps/party"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "npm run dev -w sigilkit-demo",
+    "dev:party": "npm run dev -w sigilkit-party",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "npm run build --workspaces --if-present",
+    "rename": "tsx scripts/rename.ts",
+    "release:patch": "npm version patch -m \"chore: release v%s\" && git push && git push --tags",
+    "release:minor": "npm version minor -m \"chore: release v%s\" && git push && git push --tags",
+    "release:major": "npm version major -m \"chore: release v%s\" && git push && git push --tags",
+    "release:tags": "git tag --sort=-v:refname | grep '^v'"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsdown": "^0.23.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
   }
 }
