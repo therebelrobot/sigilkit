@@ -4,7 +4,7 @@ export * from "./events";
 export * from "./shapes";
 export { parseWalkmap, type Walkmap } from "./walkmap";
 export { tokenize, parseValue, builtinCommands, type CommandFn } from "./commands";
-export { World, facingToward, type ScriptRunner, type WorldEvents, type WorldOptions } from "./world";
+export { World, facingOfStep, facingToward, screenFacing, type ScriptRunner, type WorldEvents, type WorldOptions } from "./world";
 
 import type { GameDef, RoomDef } from "./types";
 

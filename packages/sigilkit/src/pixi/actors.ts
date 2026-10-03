@@ -42,7 +42,7 @@ export function placeholderActor(color: number, size = 14): ActorDisplay {
     update(v, dt) {
       t = v.moving ? t + dt : 0;
       body.y = v.moving ? -Math.abs(Math.sin(t / 90)) * 2 : 0;
-      const dir = v.facing.split("-")[0]!;
+      const dir = v.screenFacing.split("-")[0]!;
       const [nx, ny] = NUB[dir] ?? NUB.down!;
       nub.position.set(nx * size, ny * size + body.y);
       nub.visible = dir !== "up";
@@ -94,7 +94,7 @@ export function sheetActor(spec: SheetSpec): ActorDisplay {
     update(v, dt) {
       t = v.moving ? t + dt : 0;
       const col = v.moving ? spec.walkFrames[Math.floor(t / ms) % spec.walkFrames.length]! : (spec.idleFrame ?? 0);
-      sprite.texture = frame(rowFor(v.facing), col);
+      sprite.texture = frame(rowFor(v.screenFacing), col);
     },
     destroy: () => {
       sprite.destroy();

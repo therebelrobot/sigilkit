@@ -57,16 +57,34 @@ const NEIGHBOURS: [number, number][] = [
   [1, -1], [1, 1], [-1, 1], [-1, -1],
 ];
 
-const STEP: Record<Facing, Vec2> = {
-  up: { x: 0, y: -1 },
-  down: { x: 0, y: 1 },
-  left: { x: -1, y: 0 },
-  right: { x: 1, y: 0 },
-  "up-left": { x: -1, y: -1 },
-  "up-right": { x: 1, y: -1 },
-  "down-left": { x: -1, y: 1 },
-  "down-right": { x: 1, y: 1 },
+
+const FACING_BY_DELTA: Record<string, Facing> = {
+  "0,-1": "up", "1,0": "right", "0,1": "down", "-1,0": "left",
+  "1,-1": "up-right", "1,1": "down-right", "-1,1": "down-left", "-1,-1": "up-left",
 };
+const DELTA_BY_FACING = Object.fromEntries(
+  Object.entries(FACING_BY_DELTA).map(([k, f]) => [f, k.split(",").map(Number) as [number, number]]),
+) as Record<Facing, [number, number]>;
+const SCREEN_FACINGS: Facing[] = ["right", "down-right", "down", "down-left", "left", "up-left", "up", "up-right"];
+
+/** Grid-space facing of a one-step move. */
+export function facingOfStep(dx: number, dy: number): Facing {
+  return FACING_BY_DELTA[`${Math.sign(dx)},${Math.sign(dy)}`] ?? "down";
+}
+
+/**
+ * The 8-way direction a grid facing points on screen in a projection. In an
+ * isometric room, walking grid-right travels down-right on screen; sprites should
+ * pick their animation row from this, not from the grid facing.
+ */
+export function screenFacing(projection: Projection, facing: Facing): Facing {
+  const [dx, dy] = DELTA_BY_FACING[facing];
+  const a = projection.tileToScreen(0, 0);
+  const b = projection.tileToScreen(dx, dy);
+  const angle = Math.atan2(b.y - a.y, b.x - a.x); // 0 = right, +y is down
+  const i = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
+  return SCREEN_FACINGS[i]!;
+}
 
 export function facingToward(from: TilePos, to: TilePos): Facing {
   const dx = to.x - from.x;
@@ -103,6 +121,8 @@ export class World {
   #lineResolve: (() => void) | null = null;
   #choiceResolve: ((i: number) => void) | null = null;
   #runner: ScriptRunner | null = null;
+  /** The tile step each moving actor is currently taking, for interpolation. */
+  #steps = new Map<string, { from: TilePos; to: TilePos }>();
 
   constructor(game: GameDef, options: WorldOptions = {}) {
     // Copy the actor table so addActor() can extend it without touching shared content.
@@ -214,19 +234,21 @@ export class World {
       const def = this.game.actors[id];
       let { x, y } = this.tileOf(id);
       const moving = this.#grid.hasCharacter(id) && this.#grid.isMoving(id);
-      const facing = this.#grid.hasCharacter(id) ? (this.#grid.getFacingDirection(id) as Facing) : a.facing;
-      if (moving) {
+      const step = moving ? this.#steps.get(id) : undefined;
+      if (step) {
+        // Interpolate along the step grid-engine is actually taking. Its own facing
+        // can't be used for this: in isometric maps it reports screen directions.
         const t = this.#grid.getMovementProgress(id) / 1000;
-        const step = STEP[facing] ?? { x: 0, y: 0 };
-        x += step.x * t;
-        y += step.y * t;
+        x = step.from.x + (step.to.x - step.from.x) * t;
+        y = step.from.y + (step.to.y - step.from.y) * t;
       }
       views.push({
         id,
         sprite: def?.sprite ?? id,
         screen: this.projection.tileToScreen(x, y),
         depth: this.projection.depth(x, y),
-        facing,
+        facing: a.facing,
+        screenFacing: screenFacing(this.projection, a.facing),
         moving,
         visible: a.visible,
       });
@@ -515,7 +537,6 @@ export class World {
   }
 
   face(id: string, facing: Facing): void {
-    if (this.#grid.hasCharacter(id)) this.#grid.turnTowards(id, facing as unknown as Direction);
     const a = this.state.actors[id];
     if (a) a.facing = facing;
   }
@@ -635,7 +656,6 @@ export class World {
     const p = this.#grid.getPosition(id);
     a.x = p.x;
     a.y = p.y;
-    a.facing = this.#grid.getFacingDirection(id) as Facing;
   }
 
   #leave(): void {
@@ -663,6 +683,18 @@ export class World {
         };
       }),
       numberOfDirections: (room.directions ?? 4) as unknown as NumberOfDirections,
+    });
+    // Track each step ourselves: where it starts and ends, and which way that faces in grid space.
+    this.#steps.clear();
+    const grid = this.#grid;
+    grid.positionChangeStarted().subscribe(({ charId, exitTile, enterTile }) => {
+      if (grid !== this.#grid) return;
+      this.#steps.set(charId, { from: { x: exitTile.x, y: exitTile.y }, to: { x: enterTile.x, y: enterTile.y } });
+      const a = this.state.actors[charId];
+      if (a) a.facing = facingOfStep(enterTile.x - exitTile.x, enterTile.y - exitTile.y);
+    });
+    grid.positionChangeFinished().subscribe(({ charId }) => {
+      if (grid === this.#grid) this.#steps.delete(charId);
     });
     this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null, focus: null });
     this.events.emit("roomChanged", { room, projection: this.projection });

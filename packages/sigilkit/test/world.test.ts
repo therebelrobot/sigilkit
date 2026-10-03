@@ -249,3 +249,72 @@ describe("actor interaction", () => {
     expect(Math.abs(at.x - 5) + Math.abs(at.y - 2)).toBe(1);
   });
 });
+
+describe("isometric movement", () => {
+  const iso = defineGame({
+    ...game,
+    startRoom: "plaza",
+    startEntry: undefined,
+    rooms: {
+      plaza: {
+        id: "plaza",
+        projection: "isometric",
+        directions: 8,
+        tile: { width: 32, height: 16 },
+        walkmap: [".....", ".....", ".....", ".....", "....."],
+        entries: { mid: { at: { x: 2, y: 2 } } },
+        hotspots: [],
+      },
+    },
+  });
+
+  /** Every frame of a walk, the drawn position must lie on the segment between the step's tiles. */
+  async function trace(w: World, to: { x: number; y: number }) {
+    const from = w.tileOf("hero");
+    const a = w.projection.tileToScreen(from.x, from.y);
+    const b = w.projection.tileToScreen(to.x, to.y);
+    const p = w.walk("hero", to);
+    let worst = 0;
+    const facings = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      w.update(8);
+      const v = w.actorViews().find((v) => v.id === "hero")!;
+      // Distance from the a-b line segment.
+      const t = Math.max(0, Math.min(1, ((v.screen.x - a.x) * (b.x - a.x) + (v.screen.y - a.y) * (b.y - a.y)) / ((b.x - a.x) ** 2 + (b.y - a.y) ** 2)));
+      worst = Math.max(worst, Math.hypot(v.screen.x - (a.x + t * (b.x - a.x)), v.screen.y - (a.y + t * (b.y - a.y))));
+      if (v.moving) facings.add(`${v.facing}/${v.screenFacing}`);
+      await Promise.resolve();
+    }
+    await p;
+    return { worst, facings: [...facings] };
+  }
+
+  it("draws each step along its real path, for every direction", async () => {
+    const w = new World(iso);
+    w.start();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]] as const) {
+      w.place("hero", { x: 2, y: 2 });
+      const { worst } = await trace(w, { x: 2 + dx, y: 2 + dy });
+      expect(worst, `step ${dx},${dy}`).toBeLessThan(0.01);
+      expect(w.tileOf("hero")).toEqual({ x: 2 + dx, y: 2 + dy });
+    }
+  });
+
+  it("reports grid facing and the matching on-screen facing", async () => {
+    const w = new World(iso);
+    w.start();
+    // Grid-right travels down-right on an isometric screen.
+    expect((await trace(w, { x: 3, y: 2 })).facings).toEqual(["right/down-right"]);
+    // Grid up-right travels straight right on screen.
+    w.place("hero", { x: 2, y: 2 });
+    expect((await trace(w, { x: 3, y: 1 })).facings).toEqual(["up-right/right"]);
+  });
+
+  it("keeps orthogonal facings unchanged on screen", () => {
+    const w = new World(game);
+    w.start();
+    w.face("hero", "left");
+    const v = w.actorViews().find((v) => v.id === "hero")!;
+    expect([v.facing, v.screenFacing]).toEqual(["left", "left"]);
+  });
+});

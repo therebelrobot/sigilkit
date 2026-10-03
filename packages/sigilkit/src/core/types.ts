@@ -203,7 +203,10 @@ export interface ActorView {
   sprite: string;
   screen: Vec2;
   depth: number;
+  /** Facing in grid space (what scripts and `face` use). */
   facing: Facing;
+  /** The same facing as it appears on screen; pick sprite rows from this. Differs from `facing` in isometric rooms. */
+  screenFacing: Facing;
   moving: boolean;
   visible: boolean;
 }

@@ -68,6 +68,8 @@ bounds(cols, rows)   // camera clamping
 
 `orthogonal` and `isometric` (diamond) ship. `tileArea(room, x, y, w, h, lift)` builds a hotspot polygon from tiles, raised by `lift` pixels to cover art standing on them, so hotspots stay correct in either projection. Actors, props and raised iso blocks all z-sort by foot y, which matches both projections.
 
+Facing has two forms on `ActorView`. `facing` is in grid space: what `face` and scripts use, and what a step along the grid reports. `screenFacing` is the same direction as it appears on screen; in an isometric room, walking grid-right travels down-right on screen. Sprite factories pick animation rows from `screenFacing`. Movement is interpolated along the exact step grid-engine is taking, rather than inferred from its facing, which grid-engine reports in screen terms for isometric maps.
+
 Room-to-room transitions can switch projection: the demo walks from an orthogonal greenhouse to an isometric rooftop.
 
 ### Interaction
