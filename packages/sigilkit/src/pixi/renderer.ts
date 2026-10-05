@@ -31,6 +31,8 @@ export interface BlockoutStyle {
   wallHeight?: number;
   /** Thickness of raised levels' floor slabs, in pixels. Default 4. */
   slabThickness?: number;
+  /** Colour of shut doors (`RoomDef.doors`), drawn as blocks the height of a wall. */
+  door?: number;
 }
 
 const DEFAULT_BLOCKOUT: BlockoutStyle = {
@@ -39,6 +41,7 @@ const DEFAULT_BLOCKOUT: BlockoutStyle = {
   wallTop: 0x35504a,
   wallLeft: 0x2a3d3a,
   wallRight: 0x223230,
+  door: 0x6b4e3d,
 };
 
 export interface RendererOptions {
@@ -132,11 +135,12 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   const worldFx = new Container();
   const overlay = new Container();
   const shadeLayer = new Container();
-  camera.addChild(floor, floorFx, debugLayer, entities, shadeLayer, focusLayer, worldFx, speech);
+  const fogLayer = new Container();
+  camera.addChild(floor, floorFx, fogLayer, debugLayer, entities, shadeLayer, focusLayer, worldFx, speech);
   const blockoutStyle: BlockoutStyle = { ...DEFAULT_BLOCKOUT, ...(opts.blockout || {}) };
   const areaEffects = new AreaEffects(
     world,
-    entities,
+    fogLayer,
     shadeLayer,
     { ...DEFAULT_AREA_LOOK, fogColor: opts.background ?? 0x000000, ...opts.areas },
   );
@@ -170,10 +174,14 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   const props: Sprite[] = [];
   const propDisplays: PropDisplay[] = [];
   const blocks: Graphics[] = [];
+  const doorBlocks: { view: Graphics; level: string; tile: Vec2 }[] = [];
+  let redrawBlockoutFloor: (() => void) | null = null;
   let roomBounds = { x: 0, y: 0, width: W, height: H };
   let debug = opts.debug ?? false;
 
   const clearRoom = () => {
+    doorBlocks.length = 0;
+    redrawBlockoutFloor = null;
     for (const d of displays.values()) d.destroy();
     displays.clear();
     for (const p of props) p.destroy();
@@ -216,6 +224,30 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       const roomBlockoutStyle = room.wallHeight === undefined ? blockoutStyle : { ...blockoutStyle, wallHeight: room.wallHeight };
       const b = blockout(room, projection, grid, roomBlockoutStyle);
       floor.addChild(b.floor);
+      redrawBlockoutFloor = () => {
+        const redrawn = blockout(room, projection, grid, roomBlockoutStyle, false).floor;
+        floor.removeChildren().forEach((child) => child.destroy());
+        floor.addChild(redrawn);
+      };
+      // Shut doors: a block the height of a wall, hidden while the door is open.
+      const doorHeight = roomBlockoutStyle.wallHeight ?? room.tile.height;
+      for (const door of room.doors ?? []) {
+        const doorLevel = door.level ?? world.layout.baseLevel;
+        const doorElevation = world.layout.level(doorLevel).elevation;
+        for (const tile of door.tiles) {
+          const doorDarker = shade(roomBlockoutStyle.door ?? 0x6b4e3d, 0.75);
+          const doorBlock = drawBlock(projection, tile.x, tile.y, doorElevation, doorElevation + doorHeight, {
+            top: roomBlockoutStyle.door ?? 0x6b4e3d,
+            left: roomBlockoutStyle.door ?? 0x6b4e3d,
+            right: doorDarker,
+          });
+          doorBlock.zIndex = sortKeyFor(projection, tile.x, tile.y, doorElevation);
+          doorBlock.visible = !world.layout.walkable(doorLevel, tile.x, tile.y);
+          blocks.push(doorBlock);
+          doorBlocks.push({ view: doorBlock, level: doorLevel, tile });
+          addPiece({ view: doorBlock, level: doorLevel, tiles: [tile] });
+        }
+      }
       for (const wall of b.walls) {
         blocks.push(wall.view);
         addPiece({ view: wall.view, level: world.layout.baseLevel, tiles: [wall.tile] });
@@ -299,6 +331,12 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   };
 
   const offRoom = world.events.on("roomChanged", ({ room, projection }) => void buildRoom(room, projection));
+  // Doors opening and scripts changing tiles: show doors, recolour the blockout floor.
+  const offWalkable = world.events.on("walkableChanged", () => {
+    for (const doorBlock of doorBlocks) doorBlock.view.visible = !world.layout.walkable(doorBlock.level, doorBlock.tile.x, doorBlock.tile.y);
+    redrawBlockoutFloor?.();
+    drawDebug();
+  });
   await buildRoom(world.room, world.projection);
 
   // ---------------------------------------------------------------- speech
@@ -492,6 +530,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       if (destroyed) return;
       destroyed = true;
       offRoom();
+      offWalkable();
       resizeObserver.disconnect();
       app.canvas.removeEventListener("contextmenu", noMenu);
       clearRoom();
@@ -543,6 +582,7 @@ function blockout(
   p: Projection,
   grid: World["walkmap"],
   style: BlockoutStyle,
+  withWalls = true,
 ): { floor: Graphics; walls: { view: Graphics; tile: Vec2 }[] } {
   const floor = new Graphics();
   const walls: { view: Graphics; tile: Vec2 }[] = [];
@@ -552,7 +592,7 @@ function blockout(
       const open = grid.walkable(x, y);
       const wall = room.walkmap[y]?.[x] === "#";
       floor.poly(pts).fill(open ? style.floor[(x + y) % 2]! : wall ? style.wallTop : style.blocked);
-      if (!wall || p.kind !== "isometric") continue;
+      if (!withWalls || !wall || p.kind !== "isometric") continue;
       const view = drawBlock(p, x, y, 0, style.wallHeight ?? room.tile.height, {
         top: style.wallTop,
         left: style.wallLeft,
@@ -563,4 +603,10 @@ function blockout(
       walls.push({ view, tile: { x, y } });
     }
   return { floor, walls };
+}
+
+/** A colour scaled toward black, for the shaded side of a block. */
+function shade(color: number, brightness: number): number {
+  const channel = (shift: number) => Math.round(((color >> shift) & 0xff) * brightness) << shift;
+  return channel(16) | channel(8) | channel(0);
 }

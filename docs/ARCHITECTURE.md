@@ -87,7 +87,9 @@ A room can stack floors and divide itself into named spaces, all as data on `Roo
   - `reveal: "once"` hides an area under fog until the player first enters. The reveal is saved in `WorldState.revealed`, and `>>> reveal <area>` lifts it from a script. `reveal: "inside"` shows the area only while the player is in it.
   - Hotspots whose `standAt` is fogged or cut away, and actors in either, can't be picked or focused.
 
-All of this is headless and tested in `test/levels.test.ts`. The renderer only reads it: see "Props, layers and the blockout".
+- **Doors and runtime walkability:** `RoomDef.doors` lists tiles that are walkable only while a door is open: while a flag is truthy (`openWhen: "cellar_door_open"`, so `>>> set cellar_door_open true` opens it) or while a function returns true. `world.setWalkable(tile, walkable | null, room?)` changes any tile for good (a wall knocked through, a rockfall), wins over doors, and is saved in `WorldState.walkable`; `>>> block x y [level]` and `>>> unblock x y [level]` do the same from Ink. grid-engine reads walkability live from the layout (its collision cache stays off), so a change takes effect at once. Actors mid-walk stop and their walk re-plans from where they are, keeping the same promise, so a door slamming in front of someone sends them round another way. A change emits `walkableChanged`, and the cutaway is recomputed.
+
+All of this is headless and tested in `test/levels.test.ts` and `test/doors.test.ts`. The renderer only reads it: see "Props, layers and the blockout".
 
 ### Interaction
 
@@ -120,7 +122,7 @@ Gamepad logic runs on plain `PadSnapshot` objects, so it's unit-tested without t
 
 ### Commands
 
-Commands are the verbs of scripting, usable from Ink (`>>> walk wren 4 6`), from TS (`world.command("walk wren 4 6")`) or as methods (`world.walk(...)`). Built-ins: `walk face say wait goto give take set show hide place music sfx reveal`. `walk` and `place` take an optional level after the coordinates (`>>> walk wren 3 2 roof`). Add your own with `world.commands.set(name, fn)`; async commands are awaited, so cutscenes are just sequential lines.
+Commands are the verbs of scripting, usable from Ink (`>>> walk wren 4 6`), from TS (`world.command("walk wren 4 6")`) or as methods (`world.walk(...)`). Built-ins: `walk face say wait goto give take set show hide place music sfx reveal block unblock`. `walk` and `place` take an optional level after the coordinates (`>>> walk wren 3 2 roof`). Add your own with `world.commands.set(name, fn)`; async commands are awaited, so cutscenes are just sequential lines.
 
 `wait` uses world time, not wall time, so tests and servers are deterministic.
 
@@ -166,7 +168,7 @@ Dialog defaults to the DOM box: it scales with system font settings and reaches 
 - **Animated props:** `RoomDef.props` entries can be placed by `tile` (fractional tiles centre a prop across several) and given an `id`. A renderer `props` factory returns a `PropDisplay` for any of them; it's updated every frame with the world, and depth-sorts with actors. Props the factory skips fall back to their static `asset`, anchored bottom-centre on a tile (top-left at an `at` point) unless `anchor` says otherwise. This is how scenery reacts to game state without becoming fake actors.
 - **Effect layers:** `renderer.layers.floor` sits on the ground under walls, props and actors (paths, ripples, decals); `renderer.layers.world` is above them (particles, auras). Both are in room pixels and follow the camera. `renderer.layers.overlay` covers the frame in logical pixels (tints, flashes, static).
 - **Blockout:** rooms without art draw from the walkmap. `'#'` is wall, raised in isometric rooms; other non-`'.'` characters are blocked floor under furniture. `blockout: { floor, blocked, wallTop, wallLeft, wallRight, wallHeight, slabThickness }` sets the palette, and `RoomDef.wallHeight` overrides the height per room. `blockout: false` turns it off for games that draw rooms from runtime tiles. Raised levels draw as slabs (over something walkable) or solid blocks (over nothing), with stair risers and their own walls.
-- **Cutaways, shade and fog:** every wall, slab, riser and prop is a "room piece" tagged with its level and tiles. Pieces the World reports as cut away, plus props listed in the interior's `cover`, fade to `areas.cutawayAlpha`. While the player is in an interior, a shade covers the rest of the room, with the interior's floor and the space above it left clear (an inverse mask). Unrevealed areas sit under fog drawn tile by tile in the depth-sorted layer, so walls in front of them still draw on top. All of it fades over `areas.fadeMs`. `<Stage areas={{ … }}>` tunes the look.
+- **Cutaways, shade and fog:** every wall, slab, riser and prop is a "room piece" tagged with its level and tiles. Pieces the World reports as cut away, plus props listed in the interior's `cover`, fade to `areas.cutawayAlpha`. While the player is in an interior, a shade covers the rest of the room, with the interior's floor and the space above it left clear (an inverse mask). Unrevealed areas have their floor under fog (a layer between the floor and everything standing on it) and every piece and actor in them hidden; their walls stay, so the player sees a room's shape but not what's in it. Shut doors draw as door-coloured blocks in the blockout. All of it fades over `areas.fadeMs`. `<Stage areas={{ … }}>` tunes the look.
 
 ## Multiplayer (optional)
 
@@ -185,7 +187,7 @@ browser ──ws──► Worker fetch ──► createPartyHandler(verify)
 - Each client animates other players locally from those targets, and predicts its own movement. The server corrects it only if a walk genuinely failed.
 - Story, dialog and NPCs run per client. Two players can be mid-conversation with the same NPC without interfering.
 - Changing rooms reconnects to that room's Durable Object.
-- Protocol: `walk`, `chat` up; `welcome`, `joined`, `left`, `moves`, `correct`, `chat`, `error` down. Tile positions carry an optional `level` for multi-level rooms; the server re-plans stair routes itself. Messages are validated and rate-limited per connection; a second tab with the same identity replaces the first.
+- Protocol: `walk`, `chat` up; `welcome`, `joined`, `left`, `moves`, `correct`, `chat`, `error` down. Tile positions carry an optional `level` for multi-level rooms; the server re-plans stair routes itself. Doors opened by flags are per-client in v0 (story state is local), so a door the server doesn't know is open blocks nothing there; shared doors need server-owned flags (layer 1 below). Messages are validated and rate-limited per connection; a second tab with the same identity replaces the first.
 
 **Auth: Better Auth.** `betterAuthVerifier(auth)` when Better Auth runs in the same Worker, or `betterAuthRemoteVerifier(url)` for a separate auth service. Browsers can't set headers on WebSockets, so a `?token=` from Better Auth's bearer plugin is promoted to an `Authorization` header. Same-origin cookie sessions work without it. `guestVerifier` is for local development only.
 

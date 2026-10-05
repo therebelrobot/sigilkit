@@ -53,6 +53,8 @@ export class RoomLayout {
   #stepElevationByKey = new Map<string, number>();
   #areaByKey = new Map<string, AreaDef>();
   #explicitClearanceByKey = new Map<string, number>();
+  /** Walkability as authored (stair steps opened), before doors and scripts change it. */
+  #authoredBlockedByLevel = new Map<string, number[][]>();
   #clearanceByKey = new Map<string, number>();
   #areaById = new Map<string, AreaDef>();
 
@@ -92,6 +94,14 @@ export class RoomLayout {
     });
 
     for (const stair of room.stairs ?? []) this.#addStair(stair.from ?? this.baseLevel, stair.to, stair.steps, stair.top);
+    for (const level of this.levels) this.#authoredBlockedByLevel.set(level.id, level.blockedData.map((row) => [...row]));
+    for (const door of room.doors ?? []) {
+      const levelId = door.level ?? this.baseLevel;
+      this.level(levelId);
+      for (const tile of door.tiles)
+        if (!this.walkable(levelId, tile.x, tile.y))
+          throw new Error(`room "${room.id}": door "${door.id}" tile (${tile.x}, ${tile.y}) must be '.' in the walkmap of "${levelId}"`);
+    }
     for (const clearance of room.clearances ?? []) {
       const levelId = clearance.level ?? this.baseLevel;
       this.level(levelId);
@@ -100,6 +110,25 @@ export class RoomLayout {
         this.#explicitClearanceByKey.set(clearanceKey, Math.min(clearance.height, this.#explicitClearanceByKey.get(clearanceKey) ?? Infinity));
       }
     }
+  }
+
+  /** Walkability as written in the room, before doors and scripts. */
+  authoredWalkable(levelId: string, tileX: number, tileY: number): boolean {
+    return this.#authoredBlockedByLevel.get(levelId)?.[tileY]?.[tileX] === 0;
+  }
+
+  /**
+   * Change a tile's walkability at runtime. Returns whether anything changed. The World
+   * calls this for doors and `setWalkable`; game code should go through the World.
+   */
+  setWalkable(levelId: string, tileX: number, tileY: number, walkable: boolean): boolean {
+    const row = this.level(levelId).blockedData[tileY];
+    if (!row || row[tileX] === undefined) return false;
+    const blocked = walkable ? 0 : 1;
+    if (row[tileX] === blocked) return false;
+    row[tileX] = blocked;
+    this.#clearanceByKey.clear(); // floors overhead may have changed
+    return true;
   }
 
   /**

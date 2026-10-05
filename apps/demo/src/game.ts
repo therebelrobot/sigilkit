@@ -186,6 +186,8 @@ const watchtowerBase = {
   ],
   // Too low for Wren (two blocks tall): she has to go round through the annex.
   clearances: [{ tiles: [{ x: 5, y: 6 }], height: 16 }],
+  // The door from the hall into the annex starts shut; using it opens it (see main.ink).
+  doors: [{ id: "annex-door", tiles: [{ x: 5, y: 2 }], openWhen: "annex_door_open" }],
   entries: { path: { at: { x: 1, y: 9 }, facing: "up" } },
 } satisfies Omit<RoomDef, "hotspots">;
 
@@ -199,6 +201,16 @@ export const watchtower = defineRoom({
       standAt: { x: 0, y: 9 },
       default: "walk",
       verbs: { walk: "watchtower_leave", look: "watchtower_path_look" },
+    },
+    {
+      id: "annex-door",
+      name: "annex door",
+      shape: tileArea({ ...watchtowerBase, hotspots: [] }, 5, 2, 1, 1, 40),
+      standAt: { x: 4, y: 2 },
+      face: "right",
+      default: "use",
+      when: (w) => !w.flag("annex_door_open"),
+      verbs: { use: "annex_door_use", look: "annex_door_look" },
     },
     {
       id: "lantern",
@@ -233,7 +245,7 @@ export const game = defineGame({
     can: { name: "watering can", icon: "can", verbs: { look: "can_look" }, with: { planter: "planter_water", "planter-box": "box_water" } },
   },
   rooms: { greenhouse, rooftop, watchtower },
-  flags: { roof_unlocked: false },
+  flags: { roof_unlocked: false, annex_door_open: false },
   fallback: (verb) =>
     ({ take: "I'll leave that where it is.", talk: "It doesn't say much.", use: "That doesn't do anything." })[verb] ??
     "Nothing interesting.",

@@ -6,6 +6,7 @@
 // Globals declared here mirror world flags both ways.
 
 VAR planter_watered = false
+VAR annex_door_open = false
 VAR took_can = false
 VAR roof_unlocked = false
 VAR met_moth = false
@@ -158,4 +159,13 @@ Wren: Still warm. Whoever lit it isn't far.
 
 === telescope_look ===
 Wren: Pointed at the hills. Somebody's been watching for something.
+-> END
+
+=== annex_door_look ===
+Wren: A heavy door. The bolt's on this side.
+-> END
+
+=== annex_door_use ===
+Wren: Let's see what's through here.
+~ annex_door_open = true
 -> END

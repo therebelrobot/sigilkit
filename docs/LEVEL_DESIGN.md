@@ -295,6 +295,37 @@ Rules that keep cutaways clean:
 
 A hidden area's hotspots and actors can't be clicked or focused. `>>> reveal annex` reveals a `"once"` area without walking in: for a map, a window or a story beat. `onEnter` on an area runs every time the player walks in, which is the place for the first-visit line (`{ annex_enter == 1: … }`).
 
+### Doors, gates and dungeons
+
+Rooms of a dungeon on one floor are just areas on one walkmap, with doorways between them:
+
+- Each room is an area (`reveal: "once"` for map memory, `"inside"` for torchlight: only the room you're in), and `interior: true` if it has walls the cutaway should lift.
+- **Doors** that open and shut are `doors`: tiles written as `.` in the walkmap that are walkable only while the door is open.
+
+  ```ts
+  doors: [
+    { id: "cellar-door", tiles: [{ x: 5, y: 2 }], openWhen: "cellar_door_open" }, // a flag
+    { id: "portcullis", tiles: [{ x: 9, y: 4 }, { x: 10, y: 4 }], openWhen: (w) => w.has("winch_handle") },
+  ],
+  ```
+
+  ```ink
+  === cellar_door_use ===
+  { has_item("iron_key"):
+      >>> sfx door-unlock
+      ~ cellar_door_open = true
+  - else:
+      Wren: Locked.
+  }
+  -> END
+  ```
+
+  Give each door a hotspot (with `when` hiding it once it's open, if it has nothing more to say), and its flag in `game.flags` and as a `VAR`.
+
+- **One-off changes** (a wall knocked through, a rockfall, a bridge burnt) use `world.setWalkable({ x, y, level }, false)` or, in Ink, `>>> block 4 7` and `>>> unblock 4 7`. They're saved with the game and win over doors; `setWalkable(tile, null)` hands a tile back to the room and its doors. The blockout floor recolours; painted art needs a prop that shows the change.
+- **People react:** anyone walking re-plans the moment a door shuts or opens: they go round if there's another way, through if one just opened, or stop as close as they can get.
+- **Big dungeons:** one room is fine for a floor of a few hundred tiles. Split larger ones into several rooms joined with `goto` at natural breaks (a stairwell, a long tunnel).
+
 ### Testing it
 
 `world.levelOf(id)`, `world.areaOf()`, `world.cutaway()`, `world.isCutAway(level, x, y)` and `world.isAreaRevealed(id)` are all headless, so the rules can be tested with the same `runUntilSettled` helper as section 9:
@@ -385,6 +416,7 @@ When the blockout plays well:
 - [ ] Multi-level: every level reachable by stairs; roof elevation equals `wallHeight`
 - [ ] Every character who needs to can reach every place it needs to, at its height
 - [ ] Interiors walled in, doorways outside the area; each one checked from inside
-- [ ] Attached rooms: `reveal` set, an `onEnter` line for the first visit
+- [ ] Attached rooms: `reveal` set, an `onEnter` line for the first visit, furniture tiles tagged with the room's letter
+- [ ] Doors: flag in `game.flags` and Ink, a hotspot to open each, and a way round (or a way out) if one shuts behind the player
 - [ ] Nothing interactive is hidden behind a prop or an NPC
 - [ ] Music, effects and art in place, or deliberately blockout for now

@@ -24,7 +24,7 @@ import type {
   VerbId,
   WorldState,
 } from "./types";
-import { DEFAULT_VERBS } from "./types";
+import { DEFAULT_VERBS, type DoorDef } from "./types";
 import { tilemapFor, type Walkmap } from "./walkmap";
 
 export interface ScriptRunner {
@@ -46,6 +46,8 @@ export interface WorldEvents extends Record<string, unknown> {
   areaChanged: { area: string | null; previous: string | null };
   /** An area with `reveal: "once"` was revealed for good. */
   areaRevealed: { room: string; area: string };
+  /** Tiles changed walkability: a door opened or shut, or a script called `setWalkable`. */
+  walkableChanged: { tiles: Required<LevelTilePos>[] };
   actorAdded: { actor: string };
   actorRemoved: { actor: string };
 }
@@ -144,8 +146,18 @@ export class World {
   #playerArea: string | null = null;
   /** "level:x,y" keys of tiles cut away for the current interior. */
   #cutAwayTileKeys = new Set<string>();
+  /** "level:x,y" keys of tiles whose walkability differs from the room as authored. */
+  #changedTileKeys = new Set<string>();
+  /** Bumped whenever walkability changes, so walks in progress know to re-plan. */
+  #walkabilityGeneration = 0;
+  /** Where each actor's current walk is headed, so it can re-plan when tiles change. */
+  #walkDestinationByActor = new Map<string, Required<LevelTilePos>>();
 
   constructor(game: GameDef, options: WorldOptions = {}) {
+    // A flag can open or shut a door.
+    this.events.on("flag", () => {
+      if (this.room) this.#applyWalkability();
+    });
     // Copy the actor table so addActor() can extend it without touching shared content.
     this.game = { ...game, actors: { ...game.actors } };
     this.options = options;
@@ -226,6 +238,8 @@ export class World {
   update(deltaMs: number): void {
     this.#time += deltaMs;
     this.#grid.update(this.#time, deltaMs);
+    // Doors opened by a function can depend on anything, so check them each frame (cheap).
+    if (this.room.doors?.some((door) => typeof door.openWhen === "function")) this.#applyWalkability();
     this.#trackPlayerArea(true);
     if (this.#timers.length) {
       const due = this.#timers.filter((t) => t.at <= this.#time);
@@ -334,6 +348,82 @@ export class World {
     if (view.area && !this.isAreaRevealed(view.area)) return false;
     const tile = this.tileOf(view.id);
     return !this.isCutAway(view.level, tile.x, tile.y);
+  }
+
+  // ------------------------------------------------------------- walkability
+
+  /** Whether a door in the current room is open. */
+  isDoorOpen(doorId: string): boolean {
+    const door = this.room.doors?.find((roomDoor) => roomDoor.id === doorId);
+    if (!door) throw new Error(`room "${this.room.id}" has no door "${doorId}"`);
+    return this.#doorIsOpen(door);
+  }
+
+  #doorIsOpen(door: DoorDef): boolean {
+    return typeof door.openWhen === "string" ? Boolean(this.state.flags[door.openWhen]) : door.openWhen(this);
+  }
+
+  /**
+   * Make a tile walkable or not, from now on: a wall knocked through, a rockfall, a
+   * bridge burnt. Saved with the game. `null` puts the tile back the way the room
+   * (and its doors) say. Actors mid-walk re-plan around the change.
+   */
+  setWalkable(tile: LevelTilePos, walkable: boolean | null, roomId: string = this.room.id): void {
+    const level = tile.level ?? (roomId === this.room.id ? this.layout.baseLevel : (this.game.rooms[roomId]?.baseLevel ?? "ground"));
+    const overrideKey = `${roomId}:${level}:${tile.x},${tile.y}`;
+    const overrides = { ...this.state.walkable };
+    if (walkable === null) delete overrides[overrideKey];
+    else overrides[overrideKey] = walkable;
+    this.state.walkable = overrides;
+    if (roomId === this.room.id) this.#applyWalkability();
+  }
+
+  /**
+   * Bring the layout in line with doors and saved overrides. Overrides win; then a
+   * door's tiles are walkable only while it's open; everything else is as authored.
+   */
+  #applyWalkability(quietly = false): void {
+    const desiredByKey = new Map<string, { level: string; x: number; y: number; walkable: boolean }>();
+    for (const door of this.room.doors ?? []) {
+      const level = door.level ?? this.layout.baseLevel;
+      const open = this.#doorIsOpen(door);
+      for (const tile of door.tiles) desiredByKey.set(`${level}:${tile.x},${tile.y}`, { level, x: tile.x, y: tile.y, walkable: open });
+    }
+    const roomPrefix = `${this.room.id}:`;
+    for (const [overrideKey, walkable] of Object.entries(this.state.walkable ?? {})) {
+      if (!overrideKey.startsWith(roomPrefix)) continue;
+      const tileKey = overrideKey.slice(roomPrefix.length);
+      const match = /^(.+):(-?\d+),(-?\d+)$/.exec(tileKey);
+      if (!match || !this.layout.hasLevel(match[1]!)) continue;
+      desiredByKey.set(tileKey, { level: match[1]!, x: Number(match[2]), y: Number(match[3]), walkable });
+    }
+    // Tiles changed before but no longer listed (an override cleared) go back to authored.
+    for (const tileKey of this.#changedTileKeys) {
+      if (desiredByKey.has(tileKey)) continue;
+      const match = /^(.+):(-?\d+),(-?\d+)$/.exec(tileKey)!;
+      const level = match[1]!;
+      const tileX = Number(match[2]);
+      const tileY = Number(match[3]);
+      desiredByKey.set(tileKey, { level, x: tileX, y: tileY, walkable: this.layout.authoredWalkable(level, tileX, tileY) });
+    }
+
+    const changedTiles: Required<LevelTilePos>[] = [];
+    for (const [tileKey, desired] of desiredByKey) {
+      if (this.layout.setWalkable(desired.level, desired.x, desired.y, desired.walkable))
+        changedTiles.push({ x: desired.x, y: desired.y, level: desired.level });
+      if (desired.walkable === this.layout.authoredWalkable(desired.level, desired.x, desired.y)) this.#changedTileKeys.delete(tileKey);
+      else this.#changedTileKeys.add(tileKey);
+    }
+    if (!changedTiles.length) return;
+    this.#cutAwayTileKeys = this.#computeCutAway();
+    if (quietly) return;
+    this.#walkabilityGeneration++;
+    this.events.emit("walkableChanged", { tiles: changedTiles });
+    // Anyone mid-walk stops; their walk sees the change and re-plans from where they are,
+    // around a door that just shut or through one that just opened.
+    for (const actorId of this.#walkDestinationByActor.keys()) {
+      if (this.#grid.hasCharacter(actorId) && !this.#climbs.has(actorId)) this.#grid.stopMovement(actorId);
+    }
   }
 
   // ------------------------------------------------------------------ areas
@@ -765,9 +855,23 @@ export class World {
     const fromLevel = this.levelOf(id);
     const destLevel = this.#levelForDestination(dest, fromLevel);
     this.events.emit("walk", { actor: id, to: { x: dest.x, y: dest.y, level: destLevel } });
-    // The common case starts moving right away, so callers can step time immediately.
-    if (destLevel === fromLevel && !this.#climbs.has(id)) return this.#walkOnLevel(id, dest, destLevel);
-    return this.#walkAcrossLevels(id, dest, destLevel, walkToken);
+    this.#walkDestinationByActor.set(id, { x: dest.x, y: dest.y, level: destLevel });
+    const attempt = (): Promise<boolean> => {
+      const walkabilityWhenStarted = this.#walkabilityGeneration;
+      // The common case starts moving right away, so callers can step time immediately.
+      const walking =
+        this.levelOf(id) === destLevel && !this.#climbs.has(id)
+          ? this.#walkOnLevel(id, dest, destLevel)
+          : this.#walkAcrossLevels(id, dest, destLevel, walkToken);
+      return walking.then((arrived) => {
+        const isCurrent = this.#walkTokenByActor.get(id) === walkToken;
+        // A door shut (or opened) on the way: plan again from here, same promise for the caller.
+        if (!arrived && isCurrent && this.#walkabilityGeneration !== walkabilityWhenStarted) return attempt();
+        if (isCurrent) this.#walkDestinationByActor.delete(id);
+        return arrived;
+      });
+    };
+    return attempt();
   }
 
   async #walkAcrossLevels(id: string, dest: TilePos, destLevel: string, walkToken: number): Promise<boolean> {
@@ -876,6 +980,20 @@ export class World {
       )[0];
       if (beside) to = beside;
     }
+    // Nowhere nearer to go (the target is cut off and we're already as close as we can get):
+    // grid-engine would wait forever for a move it never starts, so answer now.
+    const plannedRoute = this.#grid.findShortestPath(
+      { position: from, charLayer: level },
+      { position: to, charLayer: level },
+      {
+        numberOfDirections: (this.room.directions ?? 4) as unknown as NumberOfDirections,
+        ignoredChars: [id],
+        calculateClosestToTarget: true,
+        isPositionAllowed: (position, charLayer) => this.fits(id, position, charLayer ?? level),
+      },
+    );
+    const closest = plannedRoute.closestToTarget?.position;
+    if (!plannedRoute.path.length && (!closest || (closest.x === from.x && closest.y === from.y))) return Promise.resolve(false);
     return new Promise((resolve) => {
       let settled = false;
       const sub = this.#grid
@@ -1094,6 +1212,8 @@ export class World {
     const { tilemap, walkmap, layout } = tilemapFor(room);
     this.walkmap = walkmap;
     this.layout = layout;
+    this.#changedTileKeys = new Set();
+    this.#walkDestinationByActor.clear();
     this.#grid = new GridEngineHeadless(false);
     this.#grid.create(tilemap, {
       characters: this.actorsInRoom().map((id) => {
@@ -1129,6 +1249,7 @@ export class World {
     this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null, focus: null });
     this.#playerArea = null;
     this.#cutAwayTileKeys = new Set();
+    this.#applyWalkability(true);
     this.events.emit("roomChanged", { room, projection: this.projection });
     // Arriving inside an area reveals it, but its onEnter is left to the room's own onEnter.
     this.#trackPlayerArea(false);

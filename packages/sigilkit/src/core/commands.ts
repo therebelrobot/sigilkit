@@ -41,6 +41,9 @@ export function builtinCommands(): Map<string, CommandFn> {
     ["hide", ([id], w) => w.setVisible(id!, false)],
     // place <actor> <x> <y> [level]
     ["place", ([id, x, y, level], w) => w.place(id!, { x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) })],
+    // block <x> <y> [level] / unblock <x> <y> [level]: change a tile's walkability for good
+    ["block", ([x, y, level], w) => w.setWalkable({ x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) }, false)],
+    ["unblock", ([x, y, level], w) => w.setWalkable({ x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) }, true)],
     // reveal <area>: lift a reveal-once area's fog without walking in
     ["reveal", ([area], w) => w.revealArea(area!)],
     ["music", ([key], w) => w.events.emit("music", { key: key ?? null })],

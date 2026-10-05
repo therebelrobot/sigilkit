@@ -129,6 +129,23 @@ export interface StairDef {
 }
 
 /**
+ * A door, gate, portcullis or bridge: tiles that are walkable only while it's open.
+ * Write the tiles as '.' in the walkmap; the door closes them off while it's shut.
+ */
+export interface DoorDef {
+  id: string;
+  /** Level the tiles are on. Default: the base level. */
+  level?: string;
+  /** Usually one tile; two for a double door, a row for a portcullis or a bridge. */
+  tiles: TilePos[];
+  /**
+   * Open while this flag is truthy (`>>> set cellar_door_open true` opens it), or
+   * while the function returns true. Shut otherwise.
+   */
+  openWhen: string | ((world: import("./world").World) => boolean);
+}
+
+/**
  * Low headroom over particular tiles: a one-block doorway, a crawlspace, a vent.
  * Clearance under raised levels (a balcony, an upper floor) is worked out
  * automatically; this is for openings the levels don't describe.
@@ -200,6 +217,8 @@ export interface RoomDef {
   areas?: AreaDef[];
   /** Low openings: tiles with less headroom than the levels alone give them. */
   clearances?: ClearanceDef[];
+  /** Doors and gates: tiles walkable only while open. */
+  doors?: DoorDef[];
   /**
    * Movement directions. 8 allows diagonal steps, which makes stick control in
    * isometric rooms feel right (screen-up is a grid diagonal). Default 4.
@@ -286,6 +305,8 @@ export interface WorldState {
   script?: string;
   /** Areas revealed by entering them (`reveal: "once"`), as "roomId:areaId". */
   revealed?: string[];
+  /** Tiles whose walkability a script changed (`world.setWalkable`), as "roomId:level:x,y" -> walkable. */
+  walkable?: Record<string, boolean>;
 }
 
 export interface DialogLine {

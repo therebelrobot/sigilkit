@@ -309,7 +309,27 @@ A cutaway fades **pieces**, not pixels. Anything that should fade while the play
 
 ### Fog over attached rooms
 
-Unrevealed areas are covered tile by tile with fog (the letterbox colour by default), reaching `headroom` pixels above the floor: the room's wall height, unless `areas.headroom` says otherwise. Walls in front of a fogged room still draw on top. Give attached rooms solid walls on the sides the player sees, so the fog reads as "a room you haven't been into" rather than a hole in the map.
+An unrevealed area's floor is covered with fog (the letterbox colour by default), and everything standing in it (props, furniture, actors) is hidden. Its walls stay visible, so the player sees the shape of a room they haven't been into, but not what's in it, and the fog never covers anything standing behind it.
+
+- **Tag furniture tiles too.** A prop is hidden when the tile it stands on is in an unrevealed area, so give blocked furniture tiles the room's letter in the `areamap`, not just the walkable floor.
+- **Give attached rooms solid walls** on the sides the player sees, so the fog reads as "a room you haven't been into" rather than a hole in the map.
+
+### Doors
+
+Shut doors (`RoomDef.doors`) draw as door-coloured blocks the height of a wall in the blockout (`blockout.door` sets the colour) and disappear when the door opens. With painted art, draw the door as a prop on the door tile and show its open or shut state from the same flag in a prop factory:
+
+```ts
+const props: PropFactory = (prop, { world }) => {
+  if (prop.id !== "cellar-door") return null;
+  const doorSprite = new Sprite(doorShutTexture);
+  doorSprite.anchor.set(0.5, 1);
+  return {
+    view: doorSprite,
+    update: () => (doorSprite.texture = world.flag("cellar_door_open") ? doorOpenTexture : doorShutTexture),
+    destroy: () => doorSprite.destroy(),
+  };
+};
+```
 
 ### Tuning the look
 

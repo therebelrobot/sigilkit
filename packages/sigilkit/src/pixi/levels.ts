@@ -13,7 +13,7 @@ export interface AreaLook {
   fogColor: number;
   /** Default 1 (opaque). */
   fogAlpha: number;
-  /** How far above each floor tile the shade's cut-out and the fog reach, in pixels. Default: the blockout wall height, or two tile heights. */
+  /** How far above each floor tile the shade's cut-out reaches, in pixels. Default: the room's wall height, or two tile heights. */
   headroom?: number;
   /** Fade time for all of the above, in ms. Default 350. */
   fadeMs: number;
@@ -198,12 +198,13 @@ const approach = (current: number, target: number, maximumChange: number) =>
  * Per-frame cutaway, shade and fog for a room's areas:
  * - pieces on cut-away tiles (and an interior's `cover` props) fade to `cutawayAlpha`
  * - a shade covers the room except the interior the player is in
- * - unrevealed areas sit under fog, tile by tile, sorted like everything else so
- *   walls in front of them still draw on top
+ * - unrevealed areas have their floor under fog, and everything standing in them
+ *   (props, furniture, actors) hidden; their walls stay, so you see a room's shape,
+ *   not its contents, and the fog never covers anything behind it
  */
 export class AreaEffects {
   #world: World;
-  #entities: Container;
+  #fogLayer: Container;
   #look: AreaLook;
   #headroom: number;
   #pieces: RoomPiece[] = [];
@@ -215,9 +216,9 @@ export class AreaEffects {
   #shadeHoleArea: string | null = null;
   #shadeBounds = { x: 0, y: 0, width: 0, height: 0 };
 
-  constructor(world: World, entities: Container, shadeParent: Container, look: AreaLook) {
+  constructor(world: World, fogLayer: Container, shadeParent: Container, look: AreaLook) {
     this.#world = world;
-    this.#entities = entities;
+    this.#fogLayer = fogLayer;
     this.#look = look;
     this.#headroom = look.headroom ?? 32;
     this.#shade.alpha = 0;
@@ -247,13 +248,10 @@ export class AreaEffects {
       const revealed = world.isAreaRevealed(area.id);
       const fogTiles = world.layout.areaTiles(area.id).map((tile) => {
         const elevation = world.layout.elevationAt(tile.level, tile.x, tile.y);
-        const fogTile = new Graphics()
-          .poly(tilePrism(world.projection, tile.x, tile.y, elevation, this.#headroom))
-          .fill(this.#look.fogColor);
-        // Just in front of whatever stands on the tile, behind anything on the next tile forward.
-        fogTile.zIndex = sortKeyFor(world.projection, tile.x, tile.y, elevation) + 0.004;
+        // The floor only: what stands there is hidden separately, and walls stay visible.
+        const fogTile = new Graphics().poly(tileOutline(world.projection, tile.x, tile.y, elevation)).fill(this.#look.fogColor);
         fogTile.alpha = revealed ? 0 : this.#look.fogAlpha;
-        this.#entities.addChild(fogTile);
+        this.#fogLayer.addChild(fogTile);
         return fogTile;
       });
       this.#fogByArea.set(area.id, fogTiles);
@@ -272,6 +270,14 @@ export class AreaEffects {
     return piece.tiles.some((tile) => this.#world.isCutAway(piece.level, tile.x, tile.y));
   }
 
+  /** Whether a piece stands in an area that isn't revealed yet (furniture in an unexplored room). */
+  isHidden(piece: RoomPiece): boolean {
+    return piece.tiles.some((tile) => {
+      const area = this.#world.layout.areaAt(piece.level, tile.x, tile.y);
+      return !!area && !this.#world.isAreaRevealed(area.id);
+    });
+  }
+
   /** Target alpha for something standing at a tile: faded if cut away. */
   get cutawayAlpha(): number {
     return this.#look.cutawayAlpha;
@@ -283,7 +289,7 @@ export class AreaEffects {
     const interior = world.cutaway();
 
     for (const piece of this.#pieces) {
-      const targetAlpha = this.isCut(piece, interior) ? this.#look.cutawayAlpha : 1;
+      const targetAlpha = this.isHidden(piece) ? 0 : this.isCut(piece, interior) ? this.#look.cutawayAlpha : 1;
       piece.view.alpha = approach(piece.view.alpha, targetAlpha, fadeStep);
     }
 
