@@ -10,11 +10,14 @@
     "packages/phaser-shim",
     "packages/sigilkit",
     "apps/demo",
-    "apps/party"
+    "apps/party",
+    "apps/docs"
   ],
   "scripts": {
     "dev": "npm run dev -w sigilkit-demo",
     "dev:party": "npm run dev -w sigilkit-party",
+    "dev:docs": "npm run dev -w sigilkit-docs",
+    "build:docs": "npm run build -w sigilkit-docs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

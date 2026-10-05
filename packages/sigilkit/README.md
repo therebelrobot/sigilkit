@@ -108,6 +108,8 @@ export const Tilemaps = { Orientation: { ORTHOGONAL: 0, ISOMETRIC: 1, STAGGERED:
 
 ## More
 
+Documentation, an API reference and interactive lessons with in-browser demos are at [therebelrobot.github.io/sigilkit](https://therebelrobot.github.io/sigilkit/).
+
 Architecture, the interaction model, controls, multiplayer design and the roadmap are in the [repository](https://github.com/therebelrobot/sigilkit), along with a two-room demo (orthogonal and isometric) and a Worker hosting it for multiplayer.
 
 ## License

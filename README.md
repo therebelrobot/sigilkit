@@ -4,6 +4,8 @@ A composable 2D adventure engine for React, in the spirit of SCUMM: painted room
 
 One npm package, `sigilkit`, with subpath exports. Import only what you use; Pixi, React, Ink and PartyServer are optional peer dependencies.
 
+**Documentation and interactive lessons: [therebelrobot.github.io/sigilkit](https://therebelrobot.github.io/sigilkit/)**
+
 ```ts
 import { World, defineGame } from "sigilkit";      // headless core, no DOM
 import { InkRunner } from "sigilkit/story";         // + inkjs
@@ -21,6 +23,7 @@ import { RoomServer } from "sigilkit/net/server";   // + partyserver, in a Cloud
 ```sh
 npm install
 npm run dev          # demo at http://localhost:5173
+npm run dev:docs     # docs site and lessons (apps/docs)
 npm test
 npm run typecheck
 ```
@@ -117,6 +120,7 @@ packages/
 apps/
   demo/         two-room demo (orthogonal + isometric)
   party/        Cloudflare Worker hosting the demo's rooms
+  docs/         docs site: landing page, reference docs, interactive lessons (GitHub Pages)
 scripts/rename.ts
 ```
 

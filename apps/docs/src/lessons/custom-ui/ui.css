@@ -1,0 +1,68 @@
+.classic-ui {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  font-family: "Silkscreen", ui-monospace, monospace;
+}
+.classic-sentence {
+  margin: 0;
+  min-height: 1.3em;
+  text-align: center;
+  color: #7fd6ff;
+}
+.classic-panel {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 10px;
+}
+.classic-verbs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+}
+.vc-shell .classic-verbs button {
+  min-height: 28px;
+  padding: 2px 4px;
+  color: #3d9e57;
+  border-radius: 2px;
+}
+.vc-shell .classic-verbs button[aria-pressed="true"],
+.vc-shell .classic-verbs button:hover {
+  color: #8cf59c;
+}
+.classic-inventory {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+.vc-shell .classic-inventory button,
+.classic-slot {
+  min-height: 40px;
+  border: 1px solid #2b3d6b;
+  border-radius: 2px;
+  background: #0e1530;
+  font-size: 20px;
+}
+.vc-shell .classic-inventory button[aria-pressed="true"] {
+  border-color: #7fd6ff;
+}
+.classic-choices {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 10px);
+  margin: 0;
+  padding: 6px 10px;
+  list-style: none;
+  background: rgb(5 8 20 / 0.92);
+}
+.vc-shell .classic-choices button {
+  width: 100%;
+  min-height: 26px;
+  text-align: left;
+  color: #b18cf5;
+}
+.vc-shell .classic-choices button:hover,
+.vc-shell .classic-choices button[aria-current="true"] {
+  color: #f5e98c;
+}

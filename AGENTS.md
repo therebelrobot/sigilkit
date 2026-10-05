@@ -26,6 +26,7 @@ packages/sigilkit/          the published package
 packages/phaser-shim/       private stand-in for `phaser` (see "grid-engine and Phaser" below)
 apps/demo/                  two-room demo (orthogonal greenhouse, isometric rooftop)
 apps/party/                 Cloudflare Worker hosting the demo for multiplayer
+apps/docs/                  docs site (GitHub Pages): landing page, reference docs, Learn lessons
 docs/                       ARCHITECTURE, VISUAL_DESIGN, AUDIO_DESIGN, LEVEL_DESIGN
 scripts/release.ts          bump, commit, tag, push
 ```
@@ -36,6 +37,7 @@ scripts/release.ts          bump, commit, tag, push
 npm install
 npm run dev          # demo on http://localhost:5173 (D toggles debug overlay)
 npm run dev:party    # multiplayer worker via wrangler on :8787
+npm run dev:docs     # docs site; build:docs writes apps/docs/dist for GitHub Pages
 npm test             # vitest run
 npm run typecheck    # tsc --noEmit across the workspace
 npm run build        # tsdown into packages/sigilkit/dist
@@ -57,13 +59,22 @@ CI runs `typecheck`, `test`, `build` and a `wrangler deploy --dry-run` of `apps/
 - **World time, not wall time,** in `core` (`world.wait`, `world.time`), so tests and servers stay deterministic.
 - **Development reads source.** The package exports TypeScript under the `sigilkit-source` condition; Vite, Vitest and tsc resolve it directly. `dist/` exists only for publishing.
 
+## The docs site
+
+`apps/docs` is a Vite + React app published to GitHub Pages by `.github/workflows/docs.yml` (under `/sigilkit/`; `DOCS_BASE` overrides).
+
+- `src/site.ts` is the navigation and lesson list. Every route in it gets a static page at build time, so add pages there.
+- Reference pages are Markdown in `src/content/docs/`. The guides in `docs/` are rendered as they are, so they stay the single source; relative links between them become site links.
+- Each lesson in `src/lessons/<slug>/` is real game code. The playground shows its files through `?code` imports, so what readers see is what runs. Ink and walkmap files can be marked editable.
+- When engine behaviour or an API changes, update the matching docs page and any lesson that shows it. `npm run build:docs` and `npm run typecheck` catch broken lessons.
+
 ## Adding or changing a subpath export
 
 All four must agree, or publishing breaks:
 
 1. `packages/sigilkit/package.json` `exports` (with the `sigilkit-source`, `types` and `default` conditions)
 2. `packages/sigilkit/tsdown.config.ts` `entry`
-3. The table in `packages/sigilkit/README.md` (the npm readme) and in `docs/ARCHITECTURE.md`
+3. The table in `packages/sigilkit/README.md` (the npm readme), in `docs/ARCHITECTURE.md`, and in the docs site (`apps/docs/src/content/docs/introduction.md` and `api.md`)
 4. `peerDependenciesMeta` if it brings a new optional peer
 
 ## Tests
@@ -98,3 +109,4 @@ grid-engine imports `phaser` at module load only to read an enum. `packages/phas
 | Art: projections, painting rooms, tilesets, props, sprites, effect layers | [docs/VISUAL_DESIGN.md](docs/VISUAL_DESIGN.md) |
 | Audio: music, sfx, dialog sound, ducking, file formats | [docs/AUDIO_DESIGN.md](docs/AUDIO_DESIGN.md) |
 | Designing and building a new room or level | [docs/LEVEL_DESIGN.md](docs/LEVEL_DESIGN.md) |
+| Per-feature reference, API reference, lessons | `apps/docs` (published to GitHub Pages) |
