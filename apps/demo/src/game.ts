@@ -110,11 +110,110 @@ export const rooftop = defineRoom({
       verbs: { walk: "hatch_walk", use: "hatch_walk", look: "hatch_look" },
     },
     {
+      id: "walkway",
+      name: "walkway to the watchtower",
+      shape: tileArea({ ...rooftopBase, hotspots: [] }, 0, 7, 1, 1, 4),
+      standAt: { x: 0, y: 7 },
+      default: "walk",
+      verbs: { walk: "walkway_walk", look: "walkway_look" },
+    },
+    {
       id: "planter-box",
       name: "planter box",
       shape: tileArea({ ...rooftopBase, hotspots: [] }, 6, 4, 1, 1, 16),
       standAt: { x: 5, y: 4 },
       verbs: { look: "box_look" },
+    },
+  ],
+});
+
+
+/*
+ * Multi-level demo: a watchtower yard. The hall is an interior with a doorway at (2,4);
+ * the annex and store are attached rooms, hidden until first entered. Outside, stairs
+ * climb three levels: the yard to a porch, the porch to a balcony that runs over the
+ * hall's doorway, and the balcony to the roof.
+ */
+const watchtowerBase = {
+  id: "watchtower",
+  projection: "isometric",
+  directions: 8,
+  tile: { width: 32, height: 16 },
+  origin: { x: 176, y: 72 },
+  size: { width: 352, height: 260 },
+  // Walls as tall as the roof is high, so the roof sits on them.
+  wallHeight: 48,
+  //          x: 0123456789
+  walkmap: [
+    /* y0 */ "##########",
+    /* y1 */ "#....#...#",
+    /* y2 */ "#........#",
+    /* y3 */ "#....#...#",
+    /* y4 */ "##.###.###",
+    /* y5 */ "....p#...#",
+    /* y6 */ "....p....#", // (5,6): a cat flap into the store, one block high
+    /* y7 */ ".....#####",
+    /* y8 */ "..........",
+    /* y9 */ "..........",
+  ],
+  areamap: [
+    "          ",
+    " hhhh aaa ",
+    " hhhh aaa ",
+    " hhhh aaa ",
+    "          ",
+    "      sss ",
+    "      sss ",
+  ],
+  levels: [
+    { id: "porch", elevation: 16, walkmap: ["", "", "", "", "", "", "    .     "] },
+    { id: "balcony", elevation: 32, walkmap: ["", "", "", "", "", "  ..      "] },
+    {
+      id: "roof",
+      elevation: 48,
+      walkmap: ["..........", "..........", "..........", "..........", "..........", "     .....", "     .....", "     ....."],
+    },
+  ],
+  stairs: [
+    { to: "porch", steps: [{ x: 4, y: 8 }, { x: 4, y: 7 }], top: { x: 4, y: 6 } },
+    { from: "porch", to: "balcony", steps: [{ x: 4, y: 5 }], top: { x: 3, y: 5 } },
+    { from: "balcony", to: "roof", steps: [{ x: 1, y: 5 }], top: { x: 1, y: 4 } },
+  ],
+  areas: [
+    { id: "hall", key: "h", name: "the hall", interior: true },
+    { id: "annex", key: "a", name: "the annex", interior: true, reveal: "once" },
+    { id: "store", key: "s", name: "the store", interior: true, reveal: "once", onEnter: "store_enter" },
+  ],
+  // Too low for Wren (two blocks tall): she has to go round through the annex.
+  clearances: [{ tiles: [{ x: 5, y: 6 }], height: 16 }],
+  entries: { path: { at: { x: 1, y: 9 }, facing: "up" } },
+} satisfies Omit<RoomDef, "hotspots">;
+
+export const watchtower = defineRoom({
+  ...watchtowerBase,
+  hotspots: [
+    {
+      id: "path",
+      name: "path back to the roof garden",
+      shape: tileArea({ ...watchtowerBase, hotspots: [] }, 0, 9, 1, 1, 4),
+      standAt: { x: 0, y: 9 },
+      default: "walk",
+      verbs: { walk: "watchtower_leave", look: "watchtower_path_look" },
+    },
+    {
+      id: "lantern",
+      name: "storm lantern",
+      shape: tileArea({ ...watchtowerBase, hotspots: [] }, 7, 6, 1, 1, 14),
+      standAt: { x: 7, y: 5 },
+      verbs: { look: "lantern_look" },
+    },
+    {
+      id: "telescope",
+      name: "telescope",
+      shape: tileArea({ ...watchtowerBase, hotspots: [] }, 8, 1, 1, 1, 18, "roof"),
+      standAt: { x: 8, y: 1 },
+      level: "roof",
+      verbs: { look: "telescope_look" },
     },
   ],
 });
@@ -133,7 +232,7 @@ export const game = defineGame({
   items: {
     can: { name: "watering can", icon: "can", verbs: { look: "can_look" }, with: { planter: "planter_water", "planter-box": "box_water" } },
   },
-  rooms: { greenhouse, rooftop },
+  rooms: { greenhouse, rooftop, watchtower },
   flags: { roof_unlocked: false },
   fallback: (verb) =>
     ({ take: "I'll leave that where it is.", talk: "It doesn't say much.", use: "That doesn't do anything." })[verb] ??

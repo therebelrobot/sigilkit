@@ -59,13 +59,16 @@ export function isometric(tw: number, th: number, origin: Vec2 = { x: 0, y: 0 })
  * Hotspot shape covering a block of tiles, optionally raised by `lift` pixels
  * so it also covers art standing on those tiles (a cabinet, a solar panel).
  * Lets you author hotspots in tile space and keep them right in either projection.
+ * In a multi-level room, `level` raises the whole shape to that floor.
  */
-export function tileArea(room: RoomDef, x: number, y: number, w = 1, h = 1, lift = 0): Shape {
+export function tileArea(room: RoomDef, x: number, y: number, w = 1, h = 1, lift = 0, level?: string): Shape {
   const p = projectionFor(room);
-  const top = p.tileToScreen(x - 0.5, y - 0.5);
-  const right = p.tileToScreen(x + w - 0.5, y - 0.5);
-  const bottom = p.tileToScreen(x + w - 0.5, y + h - 0.5);
-  const left = p.tileToScreen(x - 0.5, y + h - 0.5);
+  const levelElevation = level ? (room.levels?.find((levelDef) => levelDef.id === level)?.elevation ?? 0) : 0;
+  const raised = (point: Vec2): Vec2 => ({ x: point.x, y: point.y - levelElevation });
+  const top = raised(p.tileToScreen(x - 0.5, y - 0.5));
+  const right = raised(p.tileToScreen(x + w - 0.5, y - 0.5));
+  const bottom = raised(p.tileToScreen(x + w - 0.5, y + h - 0.5));
+  const left = raised(p.tileToScreen(x - 0.5, y + h - 0.5));
   const pts =
     p.kind === "isometric"
       ? [top.x, top.y - lift, right.x, right.y - lift, right.x, right.y, bottom.x, bottom.y, left.x, left.y, left.x, left.y - lift]

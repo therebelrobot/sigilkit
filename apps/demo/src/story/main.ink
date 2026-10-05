@@ -127,3 +127,35 @@ Wren: Back down to the greenhouse.
 === hatch_walk ===
 >>> goto greenhouse door
 -> END
+
+// ---------------------------------------------------------------- watchtower
+
+=== walkway_look ===
+Wren: A plank walkway out to the old watchtower.
+-> END
+
+=== walkway_walk ===
+>>> goto watchtower path
+-> END
+
+=== watchtower_leave ===
+>>> goto rooftop hatch
+-> END
+
+=== watchtower_path_look ===
+Wren: Back toward the roof garden.
+-> END
+
+=== store_enter ===
+{ store_enter == 1:
+    Wren: A storeroom. Someone left a lantern burning.
+}
+-> END
+
+=== lantern_look ===
+Wren: Still warm. Whoever lit it isn't far.
+-> END
+
+=== telescope_look ===
+Wren: Pointed at the hills. Somebody's been watching for something.
+-> END

@@ -8,3 +8,4 @@ export {
   type PropFactory,
   type SheetSpec,
 } from "./actors";
+export { DEFAULT_AREA_LOOK, drawBlock, sortKeyFor, tileOutline, tilePrism, type AreaLook, type BlockFaces, type RoomPiece } from "./levels";

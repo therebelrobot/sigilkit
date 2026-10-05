@@ -67,7 +67,11 @@ export function connect(world: World, opts: ConnectOptions): NetSession {
         self = msg.you;
         for (const [id, a] of Object.entries(msg.actors)) {
           if (id === self || !isPlayerId(id)) continue;
-          world.addActor(id, { name: a.name, sprite: a.sprite, speed: a.speed }, { at: { x: a.x, y: a.y }, facing: a.facing });
+          world.addActor(
+            id,
+            { name: a.name, sprite: a.sprite, speed: a.speed },
+            { at: { x: a.x, y: a.y }, facing: a.facing, ...(a.level ? { level: a.level } : {}) },
+          );
           remote.add(id);
         }
         break;
@@ -76,7 +80,7 @@ export function connect(world: World, opts: ConnectOptions): NetSession {
         world.addActor(
           msg.id,
           { name: msg.actor.name, sprite: msg.actor.sprite, speed: msg.actor.speed },
-          { at: { x: msg.actor.x, y: msg.actor.y }, facing: msg.actor.facing },
+          { at: { x: msg.actor.x, y: msg.actor.y }, facing: msg.actor.facing, ...(msg.actor.level ? { level: msg.actor.level } : {}) },
         );
         remote.add(msg.id);
         break;

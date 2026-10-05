@@ -90,6 +90,8 @@ export const App = () => (
 
 Rooms without background art render as a blockout from the walkmap, so a game is playable before any art exists.
 
+Rooms can also stack floors (`levels`) joined by `stairs`, with characters of different heights (`ActorDef.height`) routing around anything too low for them. `areas` divide a room into named spaces: interiors that cut away while you're inside (front walls and roof fade, the outside is shaded), and attached rooms hidden under fog until first entered. See `docs/LEVEL_DESIGN.md` in the repository.
+
 ## One install note: grid-engine and Phaser
 
 Movement and pathfinding come from [grid-engine](https://github.com/Annoraaq/grid-engine), which imports `phaser` at load even in headless use. That pulls all of Phaser into your bundle, and it crashes in Workers. Until that import is made lazy upstream, give your app a two-line stand-in:

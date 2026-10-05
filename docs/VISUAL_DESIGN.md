@@ -79,7 +79,7 @@ The effect layers belong to your game. They are **not cleared on room change**, 
 
 ### Sorting rules that keep art honest
 
-- **Actors** sort by their foot point: the bottom-centre of the sprite.
+- **Actors** sort by their foot point: the bottom-centre of the sprite. In multi-level rooms they sort by where that foot point would be on the base floor, nudged by elevation (`ActorView.sortY`), so standing on a balcony doesn't put you in front of the yard below it.
 - **Tile-placed props** sort by `depthTile` if given, else `tile`. Use the **front-most tile** of the footprint (largest `x + y` in isometric, largest `y` in orthogonal) for `depthTile`, so an actor standing in front of the object draws over it.
 - **`at`-placed props** without `tile` or `depthTile` sort by the bottom edge of their art.
 - **Raised blockout walls** sort by their tile's centre, the same key actors use.
@@ -272,7 +272,8 @@ sheetActor({
 - **Pick rows from screen directions.** The display receives `screenFacing`, the direction as it appears on screen. In an isometric room a grid-axis step travels diagonally on screen, so **isometric characters live mostly in the four diagonals**. Draw those first.
 - **Fallbacks:** a facing without a row falls back to its horizontal half (`down-left` → `left`), then its vertical half. Four rows (`down`, `up`, `left`, `right`) are enough for an orthogonal game.
 - **No mirroring.** `sheetActor` doesn't flip frames, so draw left and right separately (or write a factory that flips).
-- **Size:** about two tiles tall reads well: 16×32 frames for 16 px orthogonal tiles, 24×40 for 32×16 isometric tiles. The click box defaults to one tile wide and two tiles tall; set `ActorDef.hitbox` when a character is bigger.
+- **Size:** about two tiles tall reads well: 16×32 frames for 16 px orthogonal tiles, 24×40 for 32×16 isometric tiles.
+- **Height:** set `ActorDef.height` to how tall the sprite actually stands, in pixels. It decides which doorways and overhangs the character fits under (default: two tile heights), and the default click box height. Draw doorways, balconies and beams at heights that match: a doorway drawn one block high should have a `clearances` entry of one block, or the art and the walking disagree.
 - **Foot point:** the anchor pixel is where the character stands. Keep it on the same pixel in every frame, or they'll swim.
 - **Any other format** (Aseprite JSON tags, Spine, single PNGs) is a custom `ActorFactory`: return a `view` and an `update(view, deltaMs)` that reads `moving` and `screenFacing`.
 
@@ -284,7 +285,51 @@ sheetActor({
 - **Smooth textures** (radial glows, gradients) must opt out of nearest-neighbour: `texture.source.scaleMode = "linear"`.
 - Graphics redrawn every frame are fine at this resolution. Batch a whole effect into one path and stroke it once rather than stroking per segment.
 
-## 9. Blockout palette
+## 9. Multi-level rooms, interiors and fog
+
+Rooms can stack floors (`levels`), connect them with `stairs`, and divide into `areas`: interiors that cut away while you're inside, and attached rooms hidden until first entered. LEVEL_DESIGN.md covers authoring; this is what the art needs.
+
+### Heights
+
+- A level's `elevation` is how far its floor sits above the base floor, **in screen pixels**. Draw raised floors that much higher than the same tile on the ground.
+- **Make roofs meet walls.** A roof level's elevation should equal the room's wall height (`RoomDef.wallHeight`, used by the blockout and by the cutaway's maths), or the roof floats above the walls.
+- Stair steps rise evenly from the lower floor to the upper one, so draw stairs with the same number of steps as `steps` tiles, plus the landing.
+- Hotspots on a raised level: `tileArea(room, x, y, w, h, lift, level)` raises the shape to that floor.
+- **Headroom under a raised floor is its elevation.** A balcony 32 px up lets a 32 px character walk beneath it and stops a taller one, so pick elevations with your characters' heights in mind.
+- Tile-placed props on a raised level: give them `level`, and they're raised and sorted with it.
+
+### What cutaways need from painted art
+
+A cutaway fades **pieces**, not pixels. Anything that should fade while the player is inside must be its own piece:
+
+- **Front walls, upper floors and the roof** of every interior are props, never part of the background. A prop placed by `tile` (with its `level`) fades when that tile is cut away. Art bigger than a tile or two, like a whole roof, should be listed by id in the area's `cover`, which fades it whenever the player is inside.
+- **Back walls, and the floor inside,** can stay in the background: nothing hides them from inside.
+- Paint walls with a top edge (a cap or a beam), so a room with its front walls faded still shows where they were.
+- Expect the outside to be shaded at about 55% while the player is in a room. Keep exteriors readable at that darkness, and keep interiors lit enough to read as the bright place.
+
+### Fog over attached rooms
+
+Unrevealed areas are covered tile by tile with fog (the letterbox colour by default), reaching `headroom` pixels above the floor: the room's wall height, unless `areas.headroom` says otherwise. Walls in front of a fogged room still draw on top. Give attached rooms solid walls on the sides the player sees, so the fog reads as "a room you haven't been into" rather than a hole in the map.
+
+### Tuning the look
+
+```tsx
+<Stage
+  areas={{
+    cutawayAlpha: 0.08, // what faded walls and roofs keep; 0 removes them entirely
+    shadeColor: 0x000000,
+    shadeAlpha: 0.55, // 0 turns the outside shade off
+    fogColor: 0x0d1412, // default: the letterbox colour
+    fogAlpha: 1,
+    fadeMs: 350,
+  }}
+  …
+/>
+```
+
+The demo's watchtower (`apps/demo`, open `?room=watchtower`) shows all of it in blockout: a hall cutaway with a doorway, two attached rooms revealed on entry, and stairs climbing past the doorway to a balcony and the roof.
+
+## 10. Blockout palette
 
 Rooms without art draw from the walkmap. Tune the look with `<Stage blockout={…}>`:
 
@@ -294,11 +339,12 @@ Rooms without art draw from the walkmap. Tune the look with `<Stage blockout={�
 | `blocked` | non-`'.'`, non-`'#'` tiles (floor under furniture) | `0x1d2a2a` |
 | `wallTop` | `'#'` tiles, and the top face of raised walls | `0x35504a` |
 | `wallLeft` / `wallRight` | the two visible faces of raised walls (isometric) | `0x2a3d3a` / `0x223230` |
-| `wallHeight` | how far walls rise, in pixels | one tile height |
+| `wallHeight` | how far walls rise, in pixels (a room's own `wallHeight` wins) | one tile height |
+| `slabThickness` | thickness of raised floors over walkable space | 4 |
 
 A blockout palette close to the final art's values makes the blockout a useful preview of readability, not just layout. `blockout={false}` turns it off entirely, for games that draw rooms from runtime tiles.
 
-## 10. Checklist for a room's art
+## 11. Checklist for a room's art
 
 - [ ] Painted at 1× logical pixels, room `(0, 0)` at the image's top-left
 - [ ] Walkable floor in the art matches the debug overlay
@@ -308,6 +354,8 @@ A blockout palette close to the final art's values makes the blockout a useful p
 - [ ] Floor dark and calm enough for ground effects to read
 - [ ] Character foot points on the same pixel in every frame
 - [ ] Checked at 2×, at 4× and on a phone (fit scaling)
+- [ ] Multi-level rooms: roof elevation equals wall height; interiors' front walls, upper floors and roof are props
+- [ ] Each interior checked from inside: what fades, what stays, how the shaded outside reads
 
 ## Known gaps
 

@@ -3,8 +3,10 @@ import { builtinCommands, tokenize, type CommandFn } from "./commands";
 import { Emitter, Store } from "./events";
 import { projectionFor, type Projection } from "./projection";
 import { pointInShape, shapeCenter } from "./shapes";
+import { ELEVATION_SORT_BIAS, RoomLayout } from "./levels";
 import type {
   ActorPlacement,
+  AreaDef,
   ActorState,
   ActorView,
   DialogChoice,
@@ -13,6 +15,7 @@ import type {
   GameDef,
   Handler,
   HotspotDef,
+  LevelTilePos,
   RoomDef,
   ScriptContext,
   TilePos,
@@ -22,7 +25,7 @@ import type {
   WorldState,
 } from "./types";
 import { DEFAULT_VERBS } from "./types";
-import { CHAR_LAYER, tilemapFor, type Walkmap } from "./walkmap";
+import { tilemapFor, type Walkmap } from "./walkmap";
 
 export interface ScriptRunner {
   /** Run a story path (e.g. an Ink knot) to completion. */
@@ -38,7 +41,11 @@ export interface WorldEvents extends Record<string, unknown> {
   flag: { name: string; value: FlagValue };
   error: { error: unknown; context: string };
   /** An actor started walking toward a tile (multiplayer clients send this as intent). */
-  walk: { actor: string; to: TilePos };
+  walk: { actor: string; to: LevelTilePos };
+  /** The player walked into a different area (or out of every area, `area: null`). */
+  areaChanged: { area: string | null; previous: string | null };
+  /** An area with `reveal: "once"` was revealed for good. */
+  areaRevealed: { room: string; area: string };
   actorAdded: { actor: string };
   actorRemoved: { actor: string };
 }
@@ -96,7 +103,7 @@ export function facingToward(from: TilePos, to: TilePos): Facing {
 type Target =
   | { kind: "hotspot"; hotspot: HotspotDef }
   | { kind: "actor"; id: string }
-  | { kind: "tile"; tile: TilePos };
+  | { kind: "tile"; tile: Required<LevelTilePos> };
 
 /**
  * The headless game. Owns state, movement and interaction; knows nothing about
@@ -113,7 +120,10 @@ export class World {
   state: WorldState;
   room!: RoomDef;
   projection!: Projection;
+  /** The base level's walkability. Multi-level rooms: use `layout`. */
   walkmap!: Walkmap;
+  /** Levels, stairs, elevations and areas of the current room. */
+  layout!: RoomLayout;
 
   #grid = new GridEngineHeadless(false);
   #time = 0;
@@ -122,7 +132,18 @@ export class World {
   #choiceResolve: ((i: number) => void) | null = null;
   #runner: ScriptRunner | null = null;
   /** The tile step each moving actor is currently taking, for interpolation. */
-  #steps = new Map<string, { from: TilePos; to: TilePos }>();
+  #steps = new Map<string, { from: TilePos; to: TilePos; fromLevel: string; toLevel: string }>();
+  /** Actors mid-way through a stair's level-changing step, which the World animates itself. */
+  #climbs = new Map<
+    string,
+    { from: TilePos; to: TilePos; fromLevel: string; toLevel: string; startedAt: number; durationMs: number; finished: Promise<boolean> }
+  >();
+  /** Bumped by every walk, so a newer walk cancels the rest of an older multi-level route. */
+  #walkTokenByActor = new Map<string, number>();
+  /** Area the player is standing in, tracked every update. */
+  #playerArea: string | null = null;
+  /** "level:x,y" keys of tiles cut away for the current interior. */
+  #cutAwayTileKeys = new Set<string>();
 
   constructor(game: GameDef, options: WorldOptions = {}) {
     // Copy the actor table so addActor() can extend it without touching shared content.
@@ -152,7 +173,14 @@ export class World {
     const actors: Record<string, ActorState> = {};
     for (const room of Object.values(game.rooms)) {
       for (const [id, p] of Object.entries(room.actors ?? {})) {
-        actors[id] ??= { room: room.id, x: p.at.x, y: p.at.y, facing: p.facing ?? "down", visible: true };
+        actors[id] ??= {
+          room: room.id,
+          x: p.at.x,
+          y: p.at.y,
+          facing: p.facing ?? "down",
+          visible: true,
+          ...(p.level ? { level: p.level } : {}),
+        };
       }
     }
     const start = game.rooms[game.startRoom];
@@ -164,6 +192,7 @@ export class World {
       y: entry.at.y,
       facing: entry.facing ?? "down",
       visible: true,
+      ...(entry.level ? { level: entry.level } : {}),
     };
     return { room: start.id, actors, inventory: [], flags: { ...game.flags } };
   }
@@ -197,6 +226,7 @@ export class World {
   update(deltaMs: number): void {
     this.#time += deltaMs;
     this.#grid.update(this.#time, deltaMs);
+    this.#trackPlayerArea(true);
     if (this.#timers.length) {
       const due = this.#timers.filter((t) => t.at <= this.#time);
       this.#timers = this.#timers.filter((t) => t.at > this.#time);
@@ -226,38 +256,267 @@ export class World {
     return { x: a.x, y: a.y };
   }
 
-  /** Renderer view: projected, depth-sorted, with smooth sub-tile movement. */
+  /** Level an actor is on in the current room (the base level's id in single-level rooms). */
+  levelOf(id: string): string {
+    if (this.#grid.hasCharacter(id)) return this.#grid.getCharLayer(id) ?? this.layout.baseLevel;
+    const level = this.state.actors[id]?.level;
+    return level && this.layout.hasLevel(level) ? level : this.layout.baseLevel;
+  }
+
+  /** How tall an actor stands, in pixels: its `height`, or two tile heights. */
+  heightOf(id: string): number {
+    return this.game.actors[id]?.height ?? this.room.tile.height * 2;
+  }
+
+  /**
+   * Whether an actor fits on a tile: it's walkable on that level, and the clearance
+   * overhead (raised floors, `clearances`) is at least the actor's height.
+   */
+  fits(id: string, tile: TilePos, level: string): boolean {
+    return this.layout.walkable(level, tile.x, tile.y) && this.layout.clearanceAt(level, tile.x, tile.y) >= this.heightOf(id);
+  }
+
+  /** Room-pixel point a tile's floor appears at on a level: its foot point, raised by the floor's height. */
+  screenOf(tile: TilePos, level = this.layout.baseLevel): Vec2 {
+    const floorPoint = this.projection.tileToScreen(tile.x, tile.y);
+    return { x: floorPoint.x, y: floorPoint.y - this.layout.elevationAt(level, tile.x, tile.y) };
+  }
+
+  /** Renderer view: projected, depth-sorted, with smooth sub-tile movement and elevation. */
   actorViews(): ActorView[] {
     const views: ActorView[] = [];
     for (const id of this.actorsInRoom()) {
       const a = this.#actor(id);
       const def = this.game.actors[id];
-      let { x, y } = this.tileOf(id);
-      const moving = this.#grid.hasCharacter(id) && this.#grid.isMoving(id);
-      const step = moving ? this.#steps.get(id) : undefined;
+      const tile = this.tileOf(id);
+      const level = this.levelOf(id);
+      let { x, y } = tile;
+      let elevation = this.layout.elevationAt(level, tile.x, tile.y);
+      const climb = this.#climbs.get(id);
+      const moving = (this.#grid.hasCharacter(id) && this.#grid.isMoving(id)) || !!climb;
+      const step = climb
+        ? { ...climb, progress: Math.min(1, (this.#time - climb.startedAt) / climb.durationMs) }
+        : moving
+          ? this.#steps.get(id)
+          : undefined;
       if (step) {
         // Interpolate along the step grid-engine is actually taking. Its own facing
         // can't be used for this: in isometric maps it reports screen directions.
-        const t = this.#grid.getMovementProgress(id) / 1000;
+        const t = "progress" in step ? step.progress : this.#grid.getMovementProgress(id) / 1000;
         x = step.from.x + (step.to.x - step.from.x) * t;
         y = step.from.y + (step.to.y - step.from.y) * t;
+        const elevationLeaving = this.layout.elevationAt(step.fromLevel, step.from.x, step.from.y);
+        const elevationEntering = this.layout.elevationAt(step.toLevel, step.to.x, step.to.y);
+        elevation = elevationLeaving + (elevationEntering - elevationLeaving) * t;
       }
+      const floorPoint = this.projection.tileToScreen(x, y);
       views.push({
         id,
         sprite: def?.sprite ?? id,
-        screen: this.projection.tileToScreen(x, y),
+        screen: { x: floorPoint.x, y: floorPoint.y - elevation },
         depth: this.projection.depth(x, y),
         facing: a.facing,
         screenFacing: screenFacing(this.projection, a.facing),
         moving,
         visible: a.visible,
+        level,
+        elevation,
+        sortY: floorPoint.y + elevation * ELEVATION_SORT_BIAS,
+        area: this.layout.areaAt(level, tile.x, tile.y)?.id ?? null,
       });
     }
-    return views.sort((a, b) => a.depth - b.depth);
+    return views.sort((first, second) => first.sortY - second.sortY);
   }
 
+  /** Whether an actor can be seen and targeted: not in fog, not under a cut-away roof. */
+  isActorShown(view: ActorView): boolean {
+    if (!view.visible) return false;
+    if (view.area && !this.isAreaRevealed(view.area)) return false;
+    const tile = this.tileOf(view.id);
+    return !this.isCutAway(view.level, tile.x, tile.y);
+  }
+
+  // ------------------------------------------------------------------ areas
+
+  /** The area an actor stands in, if any. */
+  areaOf(id: string = this.player): AreaDef | null {
+    const tile = this.tileOf(id);
+    return this.layout.areaAt(this.levelOf(id), tile.x, tile.y);
+  }
+
+  /** Whether an area's contents can be seen right now (see `AreaDef.reveal`). */
+  isAreaRevealed(areaId: string): boolean {
+    const area = this.layout.area(areaId);
+    if (!area) return true;
+    if (area.reveal === "inside") return this.#playerArea === areaId;
+    if (area.reveal === "once") return this.#playerArea === areaId || (this.state.revealed ?? []).includes(`${this.room.id}:${areaId}`);
+    return true;
+  }
+
+  /** Reveal a `reveal: "once"` area for good, without walking in (a map, a window, a script). */
+  revealArea(areaId: string): void {
+    const area = this.layout.area(areaId);
+    if (!area || area.reveal !== "once") return;
+    const revealedKey = `${this.room.id}:${areaId}`;
+    if ((this.state.revealed ?? []).includes(revealedKey)) return;
+    this.state.revealed = [...(this.state.revealed ?? []), revealedKey];
+    this.events.emit("areaRevealed", { room: this.room.id, area: areaId });
+  }
+
+  /** The interior the player is inside, whose front walls and everything above are cut away. */
+  cutaway(): AreaDef | null {
+    const area = this.#playerArea ? this.layout.area(this.#playerArea) : undefined;
+    return area?.interior ? area : null;
+  }
+
+  /** Whether a tile on a level is cut away for the current interior (fade it, don't let it be picked). */
+  isCutAway(level: string, tileX: number, tileY: number): boolean {
+    return this.#cutAwayTileKeys.has(`${level}:${tileX},${tileY}`);
+  }
+
+  #trackPlayerArea(runEnterHandler: boolean): void {
+    if (!this.#grid.hasCharacter(this.player)) return;
+    const areaId = this.areaOf(this.player)?.id ?? null;
+    if (areaId === this.#playerArea) return;
+    const previous = this.#playerArea;
+    this.#playerArea = areaId;
+    this.#cutAwayTileKeys = this.#computeCutAway();
+    const area = areaId ? this.layout.area(areaId) : undefined;
+    if (area) this.revealArea(area.id);
+    this.events.emit("areaChanged", { area: areaId, previous });
+    if (runEnterHandler && area?.onEnter)
+      void this.runHandler(area.onEnter, { world: this, target: area.id, verb: "enter" });
+  }
+
+  /**
+   * What covers the interior the player is in: wall tiles in front of it on screen
+   * (the ones that would hide it), and everything on higher levels above it or
+   * above those walls.
+   */
+  #computeCutAway(): Set<string> {
+    const cutAwayTileKeys = new Set<string>();
+    const interior = this.cutaway();
+    if (!interior) return cutAwayTileKeys;
+    const interiorTiles = this.layout.areaTiles(interior.id);
+    const interiorTileKeys = new Set(interiorTiles.map((tile) => `${tile.level}:${tile.x},${tile.y}`));
+    const footprint: { x: number; y: number; elevation: number }[] = [];
+    const maximumSidewaysOffset = this.room.tile.width * 0.75;
+
+    for (const interiorTile of interiorTiles) {
+      const elevation = this.layout.level(interiorTile.level).elevation;
+      footprint.push({ x: interiorTile.x, y: interiorTile.y, elevation });
+      const interiorPoint = this.projection.tileToScreen(interiorTile.x, interiorTile.y);
+      for (const [offsetX, offsetY] of NEIGHBOURS) {
+        const neighbour = { x: interiorTile.x + offsetX, y: interiorTile.y + offsetY };
+        if (interiorTileKeys.has(`${interiorTile.level}:${neighbour.x},${neighbour.y}`)) continue;
+        if (this.layout.walkable(interiorTile.level, neighbour.x, neighbour.y)) continue;
+        const neighbourPoint = this.projection.tileToScreen(neighbour.x, neighbour.y);
+        // Everything above the room's walls goes; of the walls themselves, only those in front.
+        footprint.push({ ...neighbour, elevation });
+        const isInFrontOnScreen =
+          neighbourPoint.y > interiorPoint.y && Math.abs(neighbourPoint.x - interiorPoint.x) < maximumSidewaysOffset;
+        if (isInFrontOnScreen) cutAwayTileKeys.add(`${interiorTile.level}:${neighbour.x},${neighbour.y}`);
+      }
+    }
+    for (const level of this.layout.levels)
+      for (const footprintTile of footprint)
+        if (level.elevation > footprintTile.elevation) cutAwayTileKeys.add(`${level.id}:${footprintTile.x},${footprintTile.y}`);
+
+    // Anything else standing in front of the interior on screen hides it too: a balcony
+    // over its doorway, the wall of the next room along, furniture. Cut any tile in front
+    // of (or level with) an interior tile whose wall top, wall middle or raised floor lands
+    // in the column of space above that interior tile.
+    const wallHeight = this.room.wallHeight ?? this.room.tile.height;
+    const highestElevation = Math.max(...this.layout.levels.map((level) => level.elevation));
+    const interiorColumns = interiorTiles.map((interiorTile) => {
+      const elevation = this.layout.level(interiorTile.level).elevation;
+      return {
+        floorY: this.projection.tileToScreen(interiorTile.x, interiorTile.y).y,
+        polygon: extrudeUpward(this.#floorOutline(interiorTile.x, interiorTile.y), highestElevation - elevation + wallHeight).map(
+          (coordinate, index) => (index % 2 === 1 ? coordinate - elevation : coordinate),
+        ),
+      };
+    });
+    const lowestInteriorElevation = Math.min(...interiorTiles.map((tile) => this.layout.level(tile.level).elevation));
+    for (const level of this.layout.levels) {
+      if (level.elevation < lowestInteriorElevation) continue;
+      level.rows.forEach((row, tileY) =>
+        [...row].forEach((character, tileX) => {
+          const tileKey = `${level.id}:${tileX},${tileY}`;
+          if (interiorTileKeys.has(tileKey) || cutAwayTileKeys.has(tileKey)) return;
+          const isFloor = this.layout.walkable(level.id, tileX, tileY);
+          // On raised levels, anything but '.' and '#' is open air.
+          const isSolid = !isFloor && (level.index === 0 || character === "#");
+          if (!isFloor && !isSolid) return;
+          if (isFloor && level.elevation === lowestInteriorElevation) return; // floor beside the room hides nothing
+          const floorPoint = this.projection.tileToScreen(tileX, tileY);
+          const floorElevation = this.layout.elevationAt(level.id, tileX, tileY);
+          const samplePoints = isFloor
+            ? [{ x: floorPoint.x, y: floorPoint.y - floorElevation }]
+            : [
+                { x: floorPoint.x, y: floorPoint.y - floorElevation - wallHeight },
+                { x: floorPoint.x, y: floorPoint.y - floorElevation - wallHeight / 2 },
+              ];
+          const hidesInterior = interiorColumns.some(
+            (column) =>
+              floorPoint.y >= column.floorY && samplePoints.some((point) => pointInShape({ polygon: column.polygon }, point)),
+          );
+          if (hidesInterior) cutAwayTileKeys.add(tileKey);
+        }),
+      );
+    }
+    return cutAwayTileKeys;
+  }
+
+  /** A base-floor tile's outline in room pixels (diamond or square). */
+  #floorOutline(tileX: number, tileY: number): Vec2[] {
+    const corner = (cornerX: number, cornerY: number) => this.projection.tileToScreen(cornerX, cornerY);
+    if (this.projection.kind === "isometric")
+      return [corner(tileX - 0.5, tileY - 0.5), corner(tileX + 0.5, tileY - 0.5), corner(tileX + 0.5, tileY + 0.5), corner(tileX - 0.5, tileY + 0.5)];
+    const topLeft = corner(tileX - 0.5, tileY - 0.5);
+    const bottomRight = corner(tileX + 0.5, tileY + 0.5);
+    return [topLeft, { x: bottomRight.x, y: topLeft.y }, bottomRight, { x: topLeft.x, y: bottomRight.y }];
+  }
+
+  /**
+   * Hotspots that can be used right now: their `when` passes, and their stand tile
+   * isn't hidden in fog or under a cut-away roof.
+   */
   hotspots(): HotspotDef[] {
-    return this.room.hotspots.filter((h) => !h.when || h.when(this));
+    return this.room.hotspots.filter((h) => {
+      if (h.when && !h.when(this)) return false;
+      if (!h.standAt) return true;
+      const level = h.level ?? this.layout.baseLevel;
+      const area = this.layout.areaAt(level, h.standAt.x, h.standAt.y);
+      if (area && !this.isAreaRevealed(area.id)) return false;
+      return !this.isCutAway(level, h.standAt.x, h.standAt.y);
+    });
+  }
+
+  /**
+   * The floor tile under a room-pixel point. In multi-level rooms the highest
+   * visible floor wins: stair steps first, then levels from the top down, skipping
+   * anything cut away or hidden in fog.
+   */
+  pickTile(p: Vec2): Required<LevelTilePos> {
+    const isPickable = (level: string, tileX: number, tileY: number) => {
+      if (!this.layout.walkable(level, tileX, tileY) || this.isCutAway(level, tileX, tileY)) return false;
+      const area = this.layout.areaAt(level, tileX, tileY);
+      return !area || this.isAreaRevealed(area.id);
+    };
+    if (this.layout.isMultiLevel) {
+      const stepsFromTop = [...this.layout.steps].sort((first, second) => second.elevation - first.elevation);
+      for (const step of stepsFromTop) {
+        const tileUnderPoint = this.projection.screenToTile(p.x, p.y + step.elevation);
+        if (tileUnderPoint.x === step.x && tileUnderPoint.y === step.y && isPickable(step.level, step.x, step.y))
+          return { x: step.x, y: step.y, level: step.level };
+      }
+      for (const level of this.layout.levelsFromTop) {
+        const tileUnderPoint = this.projection.screenToTile(p.x, p.y + level.elevation);
+        if (isPickable(level.id, tileUnderPoint.x, tileUnderPoint.y)) return { ...tileUnderPoint, level: level.id };
+      }
+    }
+    return { ...this.projection.screenToTile(p.x, p.y), level: this.layout.baseLevel };
   }
 
   /** What's under a room-pixel point: hotspot, then actor, then floor tile. */
@@ -268,12 +527,13 @@ export class World {
     if (spots[0]) return { kind: "hotspot", hotspot: spots[0] };
     const views = this.actorViews().reverse(); // front-most first
     for (const v of views) {
-      if (!v.visible || v.id === this.player) continue;
-      const [w, h] = this.game.actors[v.id]?.hitbox ?? [this.room.tile.width, this.room.tile.width * 2];
+      if (v.id === this.player || !this.isActorShown(v)) continue;
+      const actorDef = this.game.actors[v.id];
+      const [w, h] = actorDef?.hitbox ?? [this.room.tile.width, actorDef?.height ?? this.room.tile.width * 2];
       if (p.x >= v.screen.x - w / 2 && p.x < v.screen.x + w / 2 && p.y >= v.screen.y - h && p.y < v.screen.y)
         return { kind: "actor", id: v.id };
     }
-    return { kind: "tile", tile: this.projection.screenToTile(p.x, p.y) };
+    return { kind: "tile", tile: this.pickTile(p) };
   }
 
   nameAt(p: Vec2): string | null {
@@ -336,13 +596,13 @@ export class World {
     const out: { id: string; name: string; distance: number }[] = [];
     for (const h of this.hotspots()) {
       const c = shapeCenter(h.shape);
-      const stand = h.standAt ? this.projection.tileToScreen(h.standAt.x, h.standAt.y) : c;
+      const stand = h.standAt ? this.screenOf(h.standAt, h.level) : c;
       const distance = Math.min(Math.hypot(c.x - origin.x, c.y - origin.y), Math.hypot(stand.x - origin.x, stand.y - origin.y));
       out.push({ id: h.id, name: h.name, distance });
     }
     for (const v of this.actorViews()) {
       const def = this.game.actors[v.id];
-      if (v.id === from || !v.visible || !def?.verbs) continue;
+      if (v.id === from || !def?.verbs || !this.isActorShown(v)) continue;
       out.push({ id: v.id, name: def.name, distance: Math.hypot(v.screen.x - origin.x, v.screen.y - origin.y) });
     }
     return out.filter((t) => t.distance <= maxDistance).sort((a, b) => a.distance - b.distance);
@@ -389,26 +649,52 @@ export class World {
   /**
    * Walk one step in a screen-space direction (stick or d-pad), in any
    * projection: picks the walkable neighbour tile whose on-screen direction is
-   * closest. Returns null if there's nowhere to go or the actor is mid-step.
+   * closest. On a stair end, the step onto the other level is a candidate too, and
+   * screen positions include elevation, so pushing "up" a staircase climbs it.
+   * Returns null if there's nowhere to go or the actor is mid-step.
    */
   stepToward(id: string, dir: Vec2): Promise<boolean> | null {
     const len = Math.hypot(dir.x, dir.y);
-    if (!len || !this.#grid.hasCharacter(id) || this.#grid.isMoving(id)) return null;
+    if (!len || !this.#grid.hasCharacter(id) || this.#grid.isMoving(id) || this.#climbs.has(id)) return null;
     const from = this.tileOf(id);
-    const origin = this.projection.tileToScreen(from.x, from.y);
+    const fromLevel = this.levelOf(id);
+    const origin = this.screenOf(from, fromLevel);
     const diagonals = (this.room.directions ?? 4) === 8;
-    let best: { tile: TilePos; score: number } | null = null;
+    const candidates: Required<LevelTilePos>[] = [];
     for (const [dx, dy] of NEIGHBOURS) {
       if (!diagonals && dx !== 0 && dy !== 0) continue;
-      const tile = { x: from.x + dx, y: from.y + dy };
-      if (!this.walkmap.walkable(tile.x, tile.y) || this.#grid.isBlocked(tile, CHAR_LAYER)) continue;
-      const s = this.projection.tileToScreen(tile.x, tile.y);
+      const neighbour = { x: from.x + dx, y: from.y + dy };
+      if (this.fits(id, neighbour, fromLevel) && !this.#grid.isBlocked(neighbour, fromLevel))
+        candidates.push({ ...neighbour, level: fromLevel });
+    }
+    const otherEnd = this.#stairStepFrom(from, fromLevel);
+    if (otherEnd && this.fits(id, otherEnd, otherEnd.level) && !this.#grid.isBlocked(otherEnd, otherEnd.level)) candidates.push(otherEnd);
+
+    let best: { tile: Required<LevelTilePos>; score: number } | null = null;
+    for (const tile of candidates) {
+      const s = this.screenOf(tile, tile.level);
       const sx = s.x - origin.x;
       const sy = s.y - origin.y;
       const score = (sx * dir.x + sy * dir.y) / (Math.hypot(sx, sy) * len);
       if (score > 0.5 && (!best || score > best.score)) best = { tile, score };
     }
-    return best ? this.walk(id, best.tile) : null;
+    if (!best) return null;
+    if (best.tile.level !== fromLevel) {
+      this.#walkTokenByActor.set(id, (this.#walkTokenByActor.get(id) ?? 0) + 1);
+      return this.#climb(id, best.tile);
+    }
+    return this.walk(id, best.tile);
+  }
+
+  /** The tile at the other end of a stair step, if this tile is a stair's last step or landing. */
+  #stairStepFrom(tile: TilePos, level: string): Required<LevelTilePos> | null {
+    for (const stair of this.layout.stairEnds) {
+      if (level === stair.fromLevel && tile.x === stair.lastStep.x && tile.y === stair.lastStep.y)
+        return { ...stair.top, level: stair.toLevel };
+      if (level === stair.toLevel && tile.x === stair.top.x && tile.y === stair.top.y)
+        return { ...stair.lastStep, level: stair.fromLevel };
+    }
+    return null;
   }
 
   // ------------------------------------------------------------ interaction
@@ -465,22 +751,131 @@ export class World {
 
   // ---------------------------------------------------------------- actions
 
-  /** Pathfind to a tile; resolves true if the actor got there, false if it stopped short. */
-  walk(id: string, dest: TilePos): Promise<boolean> {
+  /**
+   * Pathfind to a tile; resolves true if the actor got there, false if it stopped short.
+   * In a multi-level room, `dest.level` picks the floor; without it, the actor's own
+   * level is used when the tile is walkable there, else the lowest level where it is.
+   * Reaching another level walks to the nearest stairs, climbs (or descends) them,
+   * and carries on, as many times as it takes. A newer walk cancels the rest of the route.
+   */
+  walk(id: string, dest: LevelTilePos): Promise<boolean> {
     if (!this.#grid.hasCharacter(id)) return Promise.resolve(false);
+    const walkToken = (this.#walkTokenByActor.get(id) ?? 0) + 1;
+    this.#walkTokenByActor.set(id, walkToken);
+    const fromLevel = this.levelOf(id);
+    const destLevel = this.#levelForDestination(dest, fromLevel);
+    this.events.emit("walk", { actor: id, to: { x: dest.x, y: dest.y, level: destLevel } });
+    // The common case starts moving right away, so callers can step time immediately.
+    if (destLevel === fromLevel && !this.#climbs.has(id)) return this.#walkOnLevel(id, dest, destLevel);
+    return this.#walkAcrossLevels(id, dest, destLevel, walkToken);
+  }
+
+  async #walkAcrossLevels(id: string, dest: TilePos, destLevel: string, walkToken: number): Promise<boolean> {
+    const isCurrent = () => this.#walkTokenByActor.get(id) === walkToken;
+    await this.#climbs.get(id)?.finished;
+    while (isCurrent() && this.levelOf(id) !== destLevel) {
+      const stair = this.#nextStairToward(id, destLevel);
+      if (!stair) return false;
+      const arrivedAtStair = await this.#walkOnLevel(id, stair.near, this.levelOf(id));
+      if (!arrivedAtStair || !isCurrent()) return false;
+      const climbed = await this.#climb(id, stair.far);
+      if (!climbed) return false;
+    }
+    if (!isCurrent()) return false;
+    return this.#walkOnLevel(id, dest, destLevel);
+  }
+
+  /**
+   * The stair end to head for next: the first hop on the shortest chain of stairs
+   * (by number of hops) to the destination level, and among stairs that make that
+   * hop, the one reachable by the shortest walk.
+   */
+  #nextStairToward(id: string, destLevel: string): { near: TilePos; far: Required<LevelTilePos> } | null {
+    const currentLevel = this.levelOf(id);
+    const nextLevel = this.#nextLevelOnRoute(currentLevel, destLevel);
+    if (!nextLevel) return null;
     const from = this.tileOf(id);
-    if (from.x === dest.x && from.y === dest.y) return Promise.resolve(true);
+    const options: { near: TilePos; far: Required<LevelTilePos>; distance: number }[] = [];
+    for (const stair of this.layout.stairEnds) {
+      let near: TilePos;
+      let far: Required<LevelTilePos>;
+      if (stair.fromLevel === currentLevel && stair.toLevel === nextLevel) {
+        near = stair.lastStep;
+        far = { ...stair.top, level: stair.toLevel };
+      } else if (stair.toLevel === currentLevel && stair.fromLevel === nextLevel) {
+        near = stair.top;
+        far = { ...stair.lastStep, level: stair.fromLevel };
+      } else continue;
+      if (!this.fits(id, near, currentLevel) || !this.fits(id, far, far.level)) continue;
+      const path = this.#grid.findShortestPath(
+        { position: from, charLayer: currentLevel },
+        { position: near, charLayer: currentLevel },
+        {
+          numberOfDirections: (this.room.directions ?? 4) as unknown as NumberOfDirections,
+          ignoredChars: [id],
+          isPositionAllowed: (position, charLayer) => this.fits(id, position, charLayer ?? currentLevel),
+        },
+      ).path;
+      const reachable = path.length > 0 || (from.x === near.x && from.y === near.y);
+      if (reachable) options.push({ near, far, distance: path.length });
+    }
+    options.sort((first, second) => first.distance - second.distance);
+    return options[0] ?? null;
+  }
+
+  /** Breadth-first over the stair graph: which level to climb or descend to next. */
+  #nextLevelOnRoute(fromLevel: string, destLevel: string): string | null {
+    const firstHopByLevel = new Map<string, string>();
+    const levelsToVisit = [fromLevel];
+    const visitedLevels = new Set([fromLevel]);
+    while (levelsToVisit.length) {
+      const level = levelsToVisit.shift()!;
+      for (const stair of this.layout.stairEnds) {
+        const neighbourLevel = stair.fromLevel === level ? stair.toLevel : stair.toLevel === level ? stair.fromLevel : null;
+        if (!neighbourLevel || visitedLevels.has(neighbourLevel)) continue;
+        visitedLevels.add(neighbourLevel);
+        firstHopByLevel.set(neighbourLevel, firstHopByLevel.get(level) ?? neighbourLevel);
+        if (neighbourLevel === destLevel) return firstHopByLevel.get(neighbourLevel)!;
+        levelsToVisit.push(neighbourLevel);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The one step between a stair's last step and its landing, which changes level.
+   * Animated by the World (grid-engine only moves within a level), at the actor's speed.
+   */
+  #climb(id: string, to: Required<LevelTilePos>): Promise<boolean> {
+    if (this.#grid.isBlocked(to, to.level) || !this.fits(id, to, to.level)) return Promise.resolve(false);
+    const from = this.tileOf(id);
+    const fromLevel = this.levelOf(id);
+    const durationMs = 1000 / (this.game.actors[id]?.speed ?? 4);
+    this.face(id, facingOfStep(to.x - from.x, to.y - from.y));
+    this.#grid.setPosition(id, { x: to.x, y: to.y }, to.level);
+    this.#syncActor(id);
+    const finished = this.wait(durationMs).then(() => {
+      this.#climbs.delete(id);
+      return true;
+    });
+    this.#climbs.set(id, { from, to, fromLevel, toLevel: to.level, startedAt: this.#time, durationMs, finished });
+    return finished;
+  }
+
+  /** Pathfind within one level. */
+  #walkOnLevel(id: string, dest: TilePos, level: string): Promise<boolean> {
+    const from = this.tileOf(id);
+    if (from.x === dest.x && from.y === dest.y && this.levelOf(id) === level) return Promise.resolve(true);
     // Walking "to" an occupied tile (an NPC, a prop) means walking next to it. If we're
     // already beside it there's nothing to do; grid-engine would otherwise never finish.
-    let to = dest;
-    if (this.#grid.isBlocked(dest, CHAR_LAYER)) {
-      if (this.#adjacent(from, dest)) return Promise.resolve(false);
-      const beside = this.#freeNeighbours(dest).sort(
+    let to: TilePos = { x: dest.x, y: dest.y };
+    if (this.#grid.isBlocked(to, level)) {
+      if (this.#adjacent(from, to)) return Promise.resolve(false);
+      const beside = this.#freeNeighbours(to, level, id).sort(
         (a, b) => Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y),
       )[0];
       if (beside) to = beside;
     }
-    this.events.emit("walk", { actor: id, to });
     return new Promise((resolve) => {
       let settled = false;
       const sub = this.#grid
@@ -488,27 +883,47 @@ export class World {
           noPathFoundStrategy: NoPathFoundStrategy.CLOSEST_REACHABLE,
           // Default fires when the last step *starts*; we want arrival.
           emitFinishedEvent: "END_MOVEMENT",
+          // Too tall for the ceiling there? Then that tile isn't on this actor's map.
+          isPositionAllowedFn: (position, charLayer) => this.fits(id, position, charLayer ?? level),
         })
-        .subscribe((finished) => {
+        .subscribe(() => {
           if (settled) return;
           settled = true;
           // May fire synchronously (no path), before `sub` is assigned.
           queueMicrotask(() => sub.unsubscribe());
           const at = this.#grid.getPosition(id);
           this.#syncActor(id);
-          resolve(finished.result === "SUCCESS" || (at.x === to.x && at.y === to.y));
+          // grid-engine reports "SUCCESS" on reaching the closest reachable tile too,
+          // so arrival is judged by where the actor actually ended up.
+          resolve(at.x === to.x && at.y === to.y);
         });
     });
+  }
+
+  #levelForDestination(dest: LevelTilePos, currentLevel: string): string {
+    if (dest.level) {
+      if (!this.layout.hasLevel(dest.level)) throw new Error(`room "${this.room.id}" has no level "${dest.level}"`);
+      return dest.level;
+    }
+    if (this.layout.walkable(currentLevel, dest.x, dest.y)) return currentLevel;
+    return this.layout.levels.find((level) => this.layout.walkable(level.id, dest.x, dest.y))?.id ?? currentLevel;
   }
 
   /** Add an actor at runtime (remote players, spawned NPCs). */
   addActor(id: string, def: import("./types").ActorDef, at: ActorPlacement, room = this.room.id): void {
     this.game.actors[id] = def;
-    this.state.actors[id] = { room, x: at.at.x, y: at.at.y, facing: at.facing ?? "down", visible: true };
+    this.state.actors[id] = {
+      room,
+      x: at.at.x,
+      y: at.at.y,
+      facing: at.facing ?? "down",
+      visible: true,
+      ...(at.level ? { level: at.level } : {}),
+    };
     if (room === this.room.id && !this.#grid.hasCharacter(id)) {
       this.#grid.addCharacter({
         id,
-        charLayer: CHAR_LAYER,
+        charLayer: this.levelOf(id),
         startPosition: at.at,
         facingDirection: (at.facing ?? "down") as unknown as Direction,
         speed: def.speed ?? 4,
@@ -529,11 +944,11 @@ export class World {
     return (this.room.directions ?? 4) === 8 ? Math.max(dx, dy) === 1 : dx + dy === 1;
   }
 
-  #freeNeighbours(t: TilePos): TilePos[] {
+  #freeNeighbours(t: TilePos, level: string, id: string): TilePos[] {
     const diagonals = (this.room.directions ?? 4) === 8;
     return NEIGHBOURS.filter(([dx, dy]) => diagonals || dx === 0 || dy === 0)
       .map(([dx, dy]) => ({ x: t.x + dx, y: t.y + dy }))
-      .filter((n) => this.walkmap.walkable(n.x, n.y) && !this.#grid.isBlocked(n, CHAR_LAYER));
+      .filter((n) => this.fits(id, n, level) && !this.#grid.isBlocked(n, level));
   }
 
   face(id: string, facing: Facing): void {
@@ -541,11 +956,15 @@ export class World {
     if (a) a.facing = facing;
   }
 
-  place(id: string, at: TilePos): void {
+  /** Put an actor on a tile instantly. `at.level` moves it between floors; omitted, it stays on its own. */
+  place(id: string, at: LevelTilePos): void {
     const a = this.#actor(id);
+    const level = at.level ?? (a.room === this.room.id ? this.levelOf(id) : a.level);
     a.x = at.x;
     a.y = at.y;
-    if (this.#grid.hasCharacter(id)) this.#grid.setPosition(id, at, CHAR_LAYER);
+    if (level) a.level = level;
+    if (this.#grid.hasCharacter(id)) this.#grid.setPosition(id, { x: at.x, y: at.y }, level ?? this.layout.baseLevel);
+    if (id === this.player) this.#trackPlayerArea(false);
   }
 
   setVisible(id: string, visible: boolean): void {
@@ -599,6 +1018,8 @@ export class World {
     const p = World.entryFor(room, entry);
     const player = this.#actor(this.player);
     Object.assign(player, { room: roomId, x: p.at.x, y: p.at.y, facing: p.facing ?? player.facing });
+    if (p.level) player.level = p.level;
+    else delete player.level;
     this.state.room = roomId;
     this.#enter(roomId);
     if (room.onEnter) await this.runHandler(room.onEnter, { world: this, target: roomId, verb: "enter" });
@@ -656,6 +1077,8 @@ export class World {
     const p = this.#grid.getPosition(id);
     a.x = p.x;
     a.y = p.y;
+    const level = this.#grid.getCharLayer(id);
+    if (level && this.layout.isMultiLevel) a.level = level;
   }
 
   #leave(): void {
@@ -668,15 +1091,16 @@ export class World {
     if (!room) throw new Error(`unknown room "${roomId}"`);
     this.room = room;
     this.projection = projectionFor(room);
-    const { tilemap, walkmap } = tilemapFor(room);
+    const { tilemap, walkmap, layout } = tilemapFor(room);
     this.walkmap = walkmap;
+    this.layout = layout;
     this.#grid = new GridEngineHeadless(false);
     this.#grid.create(tilemap, {
       characters: this.actorsInRoom().map((id) => {
         const a = this.#actor(id);
         return {
           id,
-          charLayer: CHAR_LAYER,
+          charLayer: a.level && layout.hasLevel(a.level) ? a.level : layout.baseLevel,
           startPosition: { x: a.x, y: a.y },
           facingDirection: a.facing as unknown as Direction,
           speed: this.game.actors[id]?.speed ?? 4,
@@ -686,10 +1110,16 @@ export class World {
     });
     // Track each step ourselves: where it starts and ends, and which way that faces in grid space.
     this.#steps.clear();
+    this.#climbs.clear();
     const grid = this.#grid;
-    grid.positionChangeStarted().subscribe(({ charId, exitTile, enterTile }) => {
+    grid.positionChangeStarted().subscribe(({ charId, exitTile, enterTile, exitLayer, enterLayer }) => {
       if (grid !== this.#grid) return;
-      this.#steps.set(charId, { from: { x: exitTile.x, y: exitTile.y }, to: { x: enterTile.x, y: enterTile.y } });
+      this.#steps.set(charId, {
+        from: { x: exitTile.x, y: exitTile.y },
+        to: { x: enterTile.x, y: enterTile.y },
+        fromLevel: exitLayer ?? layout.baseLevel,
+        toLevel: enterLayer ?? layout.baseLevel,
+      });
       const a = this.state.actors[charId];
       if (a) a.facing = facingOfStep(enterTile.x - exitTile.x, enterTile.y - exitTile.y);
     });
@@ -697,7 +1127,11 @@ export class World {
       if (grid === this.#grid) this.#steps.delete(charId);
     });
     this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null, focus: null });
+    this.#playerArea = null;
+    this.#cutAwayTileKeys = new Set();
     this.events.emit("roomChanged", { room, projection: this.projection });
+    // Arriving inside an area reveals it, but its onEnter is left to the room's own onEnter.
+    this.#trackPlayerArea(false);
     if (room.music) this.events.emit("music", { key: room.music });
   }
 
@@ -714,4 +1148,31 @@ export class World {
   get verbs(): VerbId[] {
     return this.game.verbs ?? DEFAULT_VERBS;
   }
+}
+
+/**
+ * A floor outline swept straight up by `height` pixels, as a flat polygon: the
+ * screen region a column of that height standing on the outline covers.
+ */
+function extrudeUpward(outline: Vec2[], height: number): number[] {
+  const raised = outline.map((point) => ({ x: point.x, y: point.y - height }));
+  // Convex hull of the outline and its raised copy, by gift wrapping (eight points at most).
+  const points = [...outline, ...raised];
+  const hull: Vec2[] = [];
+  let current = points.reduce((leftmost, point) => (point.x < leftmost.x || (point.x === leftmost.x && point.y < leftmost.y) ? point : leftmost));
+  do {
+    hull.push(current);
+    let candidate = points[0]!;
+    for (const point of points) {
+      if (candidate === current) {
+        candidate = point;
+        continue;
+      }
+      const cross = (candidate.x - current.x) * (point.y - current.y) - (candidate.y - current.y) * (point.x - current.x);
+      if (cross < 0 || (cross === 0 && Math.hypot(point.x - current.x, point.y - current.y) > Math.hypot(candidate.x - current.x, candidate.y - current.y)))
+        candidate = point;
+    }
+    current = candidate;
+  } while (current !== hull[0] && hull.length <= points.length);
+  return hull.flatMap((point) => [point.x, point.y]);
 }

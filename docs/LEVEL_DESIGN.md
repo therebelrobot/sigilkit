@@ -200,7 +200,124 @@ VAR chest_open = false
 
 Write every line a player could reach. Do `look` for everything first: it's the cheapest way to make a room feel inhabited.
 
-## 7. Playtest the blockout
+## 7. Levels, interiors and attached rooms
+
+A room can be more than one floor, and more than one space. Everything here is still `RoomDef` data.
+
+### Stacking floors
+
+```ts
+const yardBase = {
+  id: "yard",
+  projection: "isometric",
+  directions: 8,
+  tile: { width: 32, height: 16 },
+  wallHeight: 48, // the roof sits on the walls
+  walkmap: [ /* the ground: '.' floor, '#' wall, other letters blocked */ ],
+  levels: [
+    // On raised levels, anything but '.' and '#' is open air.
+    { id: "balcony", elevation: 32, walkmap: ["", "", "", "", "", "  ..      "] },
+    { id: "roof", elevation: 48, walkmap: ["..........", "..........", /* … */] },
+  ],
+  stairs: [
+    // Steps are on the lower level, bottom to top; `top` is the landing on the upper one.
+    { to: "balcony", steps: [{ x: 4, y: 8 }, { x: 4, y: 7 }, { x: 4, y: 6 }, { x: 4, y: 5 }], top: { x: 3, y: 5 } },
+    { from: "balcony", to: "roof", steps: [{ x: 1, y: 5 }], top: { x: 1, y: 4 } },
+  ],
+} satisfies Omit<RoomDef, "hotspots">;
+```
+
+- Every level shares the room's grid. Leave rows empty (`""`) where a level has nothing.
+- **Stairs climb one level each;** chain them to go higher. The landing must be walkable on the upper level and next to the last step.
+- **Ground under a raised floor:** leave it walkable for a balcony you can walk beneath (a doorway under the stairs), or block it for something solid (a porch, a plinth). The blockout draws the first as a slab and the second as a solid block.
+- **Only the stairs change level.** You can't hop onto a landing from beside it, and a floor passing under a staircase never catches anyone.
+- Entries, actor placements and hotspots take a `level`. In Ink: `>>> walk wren 3 2 roof`, `>>> place wren 3 2 roof`.
+- **Roof height:** the roof's elevation should equal `wallHeight`.
+
+### Character heights and low openings
+
+Every character has a height (`ActorDef.height`, in the same screen pixels as elevations). Without one, it's two tile heights: "two blocks". A character won't walk, step or climb anywhere with less headroom than its height:
+
+- **Under raised levels** the headroom is worked out for you: a balcony 32 px up gives the yard beneath it 32 px of clearance.
+- **Low openings** the levels don't describe go in `clearances`:
+
+  ```ts
+  // A cat flap: one block high, so Wren (two blocks) goes round; the cat doesn't.
+  clearances: [{ tiles: [{ x: 5, y: 6 }], height: 16 }],
+  actors: { pip: { name: "Pip", sprite: "cat", height: 12 } },
+  ```
+
+- Set `height` on characters that differ from two blocks: children, animals, a crouching pose, a tall robot.
+- **Check every route for every character who needs it.** A doorway under a balcony, a landing under a low beam, or a tunnel can cut a tall character off from half the room. `world.fits(id, tile, level)` and a test walking each character to each `standAt` catch this.
+- The blockout draws a lintel over each low opening, from the clearance up to the wall top, so they read as low in the blockout too.
+
+### Interiors
+
+Tag tiles with an `areamap` (one letter per tile, like the walkmap; spaces mean no area) and describe each letter in `areas`:
+
+```ts
+  areamap: [
+    "          ",
+    " hhhh aaa ",
+    " hhhh aaa ",
+    " hhhh aaa ",
+  ],
+  areas: [
+    { id: "hall", key: "h", name: "the hall", interior: true },
+    { id: "annex", key: "a", name: "the annex", interior: true, reveal: "once", onEnter: "annex_enter" },
+  ],
+```
+
+While the player stands in an interior:
+
+- its **front walls** fade, along with everything on higher levels above its walls and floor (the roof, the floor above)
+- anything else **in front of it on screen** fades too: a balcony over its doorway, the wall of the room next door
+- props listed in its `cover` fade (painted roofs and front walls; see VISUAL_DESIGN.md)
+- the rest of the room is shaded, so the room you're in is the bright one
+- hotspots and actors under the faded parts can't be clicked or focused
+
+Rules that keep cutaways clean:
+
+- **Enclose interiors with walls** (`#`). The cutaway works out front and back from the walls around the area's tiles.
+- **Doorways are walkable tiles in the wall line,** outside the area. Walking through one changes area, and the cutaway follows.
+- **One area per room of the building,** so each room cuts away on its own.
+- **Put the doorway's outside tile somewhere the shade isn't confusing:** the player passes from shaded outside to bright inside in one step, so the door should be obvious from both sides.
+
+### Attached rooms revealed as you go
+
+`reveal` decides when an area's contents can be seen:
+
+| `reveal` | Hidden | Use for |
+| --- | --- | --- |
+| `"always"` (default) | never | ordinary spaces |
+| `"once"` | under fog until first entered; then for good, and saved | rooms you discover: the annex, the store, the cellar |
+| `"inside"` | whenever the player isn't in it | spaces only visible from within: a dark cave, a cupboard |
+
+A hidden area's hotspots and actors can't be clicked or focused. `>>> reveal annex` reveals a `"once"` area without walking in: for a map, a window or a story beat. `onEnter` on an area runs every time the player walks in, which is the place for the first-visit line (`{ annex_enter == 1: … }`).
+
+### Testing it
+
+`world.levelOf(id)`, `world.areaOf()`, `world.cutaway()`, `world.isCutAway(level, x, y)` and `world.isAreaRevealed(id)` are all headless, so the rules can be tested with the same `runUntilSettled` helper as section 9:
+
+```ts
+it("reveals the annex on entering it", async () => {
+  const world = new World(game, { autoAdvanceMs: 1 });
+  world.start();
+  await runUntilSettled(world, world.goto("yard"));
+  expect(world.isAreaRevealed("annex")).toBe(false);
+  await runUntilSettled(world, world.walk(world.player, { x: 7, y: 2 }));
+  expect(world.isAreaRevealed("annex")).toBe(true);
+});
+
+it("climbs to the roof", async () => {
+  const world = new World(game, { autoAdvanceMs: 1 });
+  world.start();
+  await runUntilSettled(world, world.goto("yard"));
+  expect(await runUntilSettled(world, world.walk(world.player, { x: 5, y: 2, level: "roof" }))).toBe(true);
+});
+```
+
+## 8. Playtest the blockout
 
 Run the game with the debug overlay on (`renderer.setDebug(true)`). Then:
 
@@ -211,7 +328,7 @@ Run the game with the debug overlay on (`renderer.setDebug(true)`). Then:
 - [ ] Save, reload, and the room's state is still right (`world.serialize()` / `world.load()`)
 - [ ] Someone who didn't design the room can finish it without hints, or with only the hints the room gives
 
-## 8. Test it headlessly
+## 9. Test it headlessly
 
 Rooms are data, so the rules that matter can be tested without a browser. Step world time until a promise settles:
 
@@ -240,8 +357,9 @@ describe("galleries", () => {
   it("can reach every hotspot's stand tile", async () => {
     for (const hotspot of game.rooms.galleries.hotspots) {
       if (!hotspot.standAt) continue;
-      const world = new World(game, { room: "galleries", autoAdvanceMs: 1 });
+      const world = new World(game, { autoAdvanceMs: 1 });
       world.start();
+      await runUntilSettled(world, world.goto("galleries"));
       expect(await runUntilSettled(world, world.walk(world.player, hotspot.standAt)), hotspot.id).toBe(true);
     }
   });
@@ -250,7 +368,7 @@ describe("galleries", () => {
 
 Story knots run in tests too: install the `InkRunner` with the compiled story and call `world.interact("chest", "use")`, then assert on flags.
 
-## 9. Art and sound passes
+## 10. Art and sound passes
 
 When the blockout plays well:
 
@@ -258,11 +376,15 @@ When the blockout plays well:
 2. **Sound** (AUDIO_DESIGN.md): the room's `music` loop, an `sfx` for every state change, dialog blips or voice.
 3. **Playtest again.** Painted art changes how readable the room is: hotspots that were obvious as coloured blocks can disappear into a detailed painting.
 
-## 10. Final checklist
+## 11. Final checklist
 
 - [ ] Room registered in `game.rooms`; every entry used by a `goto` exists
 - [ ] Every flag declared in `game.flags` and as a `VAR` in Ink
 - [ ] Every knot named in `verbs`, `onEnter` and `items.*.with` exists in the Ink (a missing one shows as an `error` event when used)
 - [ ] Every `standAt` and entry is walkable and reachable (a test covers it)
+- [ ] Multi-level: every level reachable by stairs; roof elevation equals `wallHeight`
+- [ ] Every character who needs to can reach every place it needs to, at its height
+- [ ] Interiors walled in, doorways outside the area; each one checked from inside
+- [ ] Attached rooms: `reveal` set, an `onEnter` line for the first visit
 - [ ] Nothing interactive is hidden behind a prop or an NPC
 - [ ] Music, effects and art in place, or deliberately blockout for now

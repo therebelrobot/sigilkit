@@ -12,6 +12,7 @@ import {
   type ApplicationOptions,
 } from "pixi.js";
 import type { ActorDisplay, ActorFactory, PropDisplay, PropFactory } from "./actors";
+import { AreaEffects, DEFAULT_AREA_LOOK, drawBlock, levelBlockoutPieces, sortKeyFor, tileOutline, type AreaLook, type RoomPiece } from "./levels";
 
 export type Scaling = "integer" | "fit" | "auto";
 
@@ -28,6 +29,8 @@ export interface BlockoutStyle {
   wallRight: number;
   /** Pixels walls rise in isometric rooms. Default: one tile height. */
   wallHeight?: number;
+  /** Thickness of raised levels' floor slabs, in pixels. Default 4. */
+  slabThickness?: number;
 }
 
 const DEFAULT_BLOCKOUT: BlockoutStyle = {
@@ -65,6 +68,8 @@ export interface RendererOptions {
   blockout?: Partial<BlockoutStyle> | false;
   /** Draw walkmap and hotspot outlines. */
   debug?: boolean;
+  /** Look of interior cutaways, the shade outside them, and fog over unrevealed areas. */
+  areas?: Partial<AreaLook>;
   /**
    * Draw spoken lines above the speaker, SCUMM-style. Default false: the React
    * DialogBox is more readable on phones and reaches screen readers. Turn this on
@@ -126,7 +131,15 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
   const floorFx = new Container();
   const worldFx = new Container();
   const overlay = new Container();
-  camera.addChild(floor, floorFx, debugLayer, entities, focusLayer, worldFx, speech);
+  const shadeLayer = new Container();
+  camera.addChild(floor, floorFx, debugLayer, entities, shadeLayer, focusLayer, worldFx, speech);
+  const blockoutStyle: BlockoutStyle = { ...DEFAULT_BLOCKOUT, ...(opts.blockout || {}) };
+  const areaEffects = new AreaEffects(
+    world,
+    entities,
+    shadeLayer,
+    { ...DEFAULT_AREA_LOOK, fogColor: opts.background ?? 0x000000, ...opts.areas },
+  );
   frame.addChild(mask, camera, overlay);
   frame.mask = mask;
   app.stage.addChild(frame);
@@ -191,25 +204,53 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       : projection.bounds(grid.cols, grid.rows);
     const bg = room.background ? await loadTexture(room.background) : null;
     if (destroyed || world.room !== room) return; // destroyed or room changed while loading
+    if (bg && !room.size) roomBounds = { x: 0, y: 0, width: bg.width, height: bg.height };
+    areaEffects.reset(roomBounds, room.wallHeight ?? blockoutStyle.wallHeight ?? room.tile.height * 2);
+    const addPiece = (piece: RoomPiece) => {
+      entities.addChild(piece.view);
+      areaEffects.addPiece(piece);
+    };
     if (bg) {
       floor.addChild(new Sprite(bg));
-      if (!room.size) roomBounds = { x: 0, y: 0, width: bg.width, height: bg.height };
     } else if (opts.blockout !== false) {
-      const b = blockout(room, projection, grid, { ...DEFAULT_BLOCKOUT, ...opts.blockout });
+      const roomBlockoutStyle = room.wallHeight === undefined ? blockoutStyle : { ...blockoutStyle, wallHeight: room.wallHeight };
+      const b = blockout(room, projection, grid, roomBlockoutStyle);
       floor.addChild(b.floor);
-      for (const g of b.blocks) {
-        entities.addChild(g);
-        blocks.push(g);
+      for (const wall of b.walls) {
+        blocks.push(wall.view);
+        addPiece({ view: wall.view, level: world.layout.baseLevel, tiles: [wall.tile] });
+      }
+      if (world.layout.isMultiLevel || room.clearances?.length) {
+        const levelPieces = levelBlockoutPieces(world, world.layout, {
+          wallTop: blockoutStyle.wallTop,
+          wallLeft: blockoutStyle.wallLeft,
+          wallRight: blockoutStyle.wallRight,
+          floorTop: blockoutStyle.floor[0],
+          floorSide: [blockoutStyle.wallLeft, blockoutStyle.wallRight],
+          wallHeight: roomBlockoutStyle.wallHeight ?? room.tile.height,
+          slabThickness: blockoutStyle.slabThickness ?? 4,
+        });
+        for (const piece of levelPieces) {
+          blocks.push(piece.view as Graphics);
+          addPiece(piece);
+        }
       }
     }
     for (const p of room.props ?? []) {
       const display = opts.props?.(p, { world, projection });
+      const propLevel = p.level ?? world.layout.baseLevel;
+      const propPiece = (view: Container): RoomPiece => ({
+        view,
+        level: propLevel,
+        tiles: tilesUnder(p.depthTile ?? p.tile),
+        ...(p.id ? { propId: p.id } : {}),
+      });
       if (display) {
-        const pos = propPosition(p, projection);
+        const pos = propPosition(p, world);
         display.view.position.set(pos.x, pos.y);
-        display.view.zIndex = propDepth(p, projection, pos.y);
-        entities.addChild(display.view);
+        display.view.zIndex = propDepth(p, world, pos.y);
         propDisplays.push(display);
+        addPiece(propPiece(display.view));
         continue;
       }
       const tex = p.asset ? await loadTexture(p.asset) : null;
@@ -220,16 +261,16 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
         s.anchor.set(p.anchor?.x ?? 0, p.anchor?.y ?? 0);
         s.position.set(p.at.x, p.at.y);
       } else if (p.tile) {
-        // Tile-placed art stands on the tile's foot point.
+        // Tile-placed art stands on the tile's foot point, raised to its level.
         s.anchor.set(p.anchor?.x ?? 0.5, p.anchor?.y ?? 1);
-        const pos = projection.tileToScreen(p.tile.x, p.tile.y);
+        const pos = propPosition(p, world);
         s.position.set(pos.x, pos.y);
       }
       // Without a sort tile, sort by the art's bottom edge wherever the anchor puts it.
       const artBottomEdge = s.y + tex.height * (1 - s.anchor.y);
-      s.zIndex = p.depthTile || p.tile ? propDepth(p, projection, 0) : artBottomEdge;
-      entities.addChild(s);
+      s.zIndex = p.depthTile || p.tile ? propDepth(p, world, 0) : artBottomEdge;
       props.push(s);
+      addPiece(propPiece(s));
     }
     drawDebug();
   };
@@ -238,11 +279,22 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
     debugLayer.clear();
     if (!debug) return;
     const p = world.projection;
-    const g = world.walkmap;
-    for (let y = 0; y < g.rows; y++)
-      for (let x = 0; x < g.cols; x++) {
-        debugLayer.poly(tileOutline(p, x, y)).fill({ color: g.walkable(x, y) ? 0x40ff80 : 0xff4060, alpha: 0.18 });
+    const layout = world.layout;
+    for (let y = 0; y < layout.rows; y++)
+      for (let x = 0; x < layout.cols; x++) {
+        debugLayer.poly(tileOutline(p, x, y)).fill({ color: layout.walkable(layout.baseLevel, x, y) ? 0x40ff80 : 0xff4060, alpha: 0.18 });
       }
+    // Raised levels and stair steps: walkable tiles only, outlined at their height.
+    const debugLevelColors = [0x40c0ff, 0xc080ff, 0xffc040, 0xff80c0];
+    for (const level of layout.levels) {
+      for (let y = 0; y < layout.rows; y++)
+        for (let x = 0; x < layout.cols; x++) {
+          const isStep = layout.isStep(level.id, x, y);
+          if ((level.index === 0 && !isStep) || !layout.walkable(level.id, x, y)) continue;
+          const color = isStep ? 0xffffff : debugLevelColors[(level.index - 1) % debugLevelColors.length]!;
+          debugLayer.poly(tileOutline(p, x, y, layout.elevationAt(level.id, x, y))).stroke({ width: 1, color, alpha: 0.8 });
+        }
+    }
     for (const h of world.hotspots()) drawShape(debugLayer, h).stroke({ width: 1, color: 0xffe066, alpha: 0.9 });
   };
 
@@ -276,7 +328,8 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
     if (speechText.text !== line.text) speechText.text = line.text;
     speechText.style.fill = world.game.actors[view.id]?.color ?? 0xffffff;
     speechText.resolution = scale * (globalThis.devicePixelRatio ?? 1);
-    const [, h] = world.game.actors[view.id]?.hitbox ?? [0, world.room.tile.width * 2];
+    const speakerDef = world.game.actors[view.id];
+    const [, h] = speakerDef?.hitbox ?? [0, speakerDef?.height ?? world.room.tile.width * 2];
     // Keep the bubble inside the visible frame.
     const half = speechText.width / 2;
     const left = -camera.x + 2 + half;
@@ -335,7 +388,16 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       }
       d.view.visible = v.visible;
       d.view.position.set(Math.round(v.screen.x), Math.round(v.screen.y));
-      d.view.zIndex = v.screen.y;
+      d.view.zIndex = v.sortY;
+      // Hidden in fog: gone. Under a cut-away roof: faded like the roof. Otherwise: shown.
+      const actorTile = world.tileOf(v.id);
+      const targetAlpha =
+        v.area && !world.isAreaRevealed(v.area)
+          ? 0
+          : world.isCutAway(v.level, actorTile.x, actorTile.y)
+            ? areaEffects.cutawayAlpha
+            : 1;
+      d.view.alpha += Math.sign(targetAlpha - d.view.alpha) * Math.min(Math.abs(targetAlpha - d.view.alpha), dt / 350);
       d.update(v, dt);
     }
     for (const [id, d] of displays) {
@@ -345,6 +407,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       }
     }
     for (const p of propDisplays) p.update?.(dt, world);
+    areaEffects.update(dt);
     follow(views);
     updateSpeech(views);
     drawFocus(views, dt);
@@ -432,6 +495,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       resizeObserver.disconnect();
       app.canvas.removeEventListener("contextmenu", noMenu);
       clearRoom();
+      areaEffects.destroy();
       app.destroy(true, { children: true });
     },
   };
@@ -439,27 +503,30 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
 
 // ------------------------------------------------------------------ helpers
 
-function tileOutline(p: Projection, x: number, y: number): number[] {
-  if (p.kind === "isometric") {
-    const t = p.tileToScreen(x - 0.5, y - 0.5); // top corner
-    const r = p.tileToScreen(x + 0.5, y - 0.5);
-    const b = p.tileToScreen(x + 0.5, y + 0.5);
-    const l = p.tileToScreen(x - 0.5, y + 0.5);
-    return [t.x, t.y, r.x, r.y, b.x, b.y, l.x, l.y];
-  }
-  const a = p.tileToScreen(x - 0.5, y - 0.5);
-  const c = p.tileToScreen(x + 0.5, y + 0.5);
-  return [a.x, a.y, c.x, a.y, c.x, c.y, a.x, c.y];
+/** Where a prop stands: its `at` point, or its tile's foot point raised to the prop's level. */
+function propPosition(p: PropDef, world: World): Vec2 {
+  if (!p.tile) return p.at ?? { x: 0, y: 0 };
+  const floorPoint = world.projection.tileToScreen(p.tile.x, p.tile.y);
+  return { x: floorPoint.x, y: floorPoint.y - propElevation(p, world) };
 }
 
-function propPosition(p: PropDef, projection: Projection): Vec2 {
-  if (p.tile) return projection.tileToScreen(p.tile.x, p.tile.y);
-  return p.at ?? { x: 0, y: 0 };
-}
-
-function propDepth(p: PropDef, projection: Projection, fallbackY: number): number {
+function propDepth(p: PropDef, world: World, fallbackY: number): number {
   const t = p.depthTile ?? p.tile;
-  return t ? projection.tileToScreen(t.x, t.y).y : fallbackY;
+  return t ? sortKeyFor(world.projection, t.x, t.y, propElevation(p, world)) : fallbackY;
+}
+
+function propElevation(p: PropDef, world: World): number {
+  if (!p.level || !world.layout.hasLevel(p.level)) return 0;
+  const tile = p.depthTile ?? p.tile;
+  return tile ? world.layout.elevationAt(p.level, Math.round(tile.x), Math.round(tile.y)) : world.layout.level(p.level).elevation;
+}
+
+/** Whole tiles a (possibly fractional) tile position covers: {3.5, 1} is tiles 3 and 4 of row 1. */
+function tilesUnder(tile: Vec2 | undefined): Vec2[] {
+  if (!tile) return [];
+  const columns = [...new Set([Math.floor(tile.x), Math.ceil(tile.x)])];
+  const rows = [...new Set([Math.floor(tile.y), Math.ceil(tile.y)])];
+  return columns.flatMap((tileX) => rows.map((tileY) => ({ x: tileX, y: tileY })));
 }
 
 function drawShape(g: Graphics, h: HotspotDef): Graphics {
@@ -471,9 +538,14 @@ function drawShape(g: Graphics, h: HotspotDef): Graphics {
  * Flat-shaded floor straight from the walkmap, for rooms without art yet.
  * '#' tiles become raised walls in isometric rooms and depth-sort with actors.
  */
-function blockout(room: RoomDef, p: Projection, grid: World["walkmap"], style: BlockoutStyle): { floor: Graphics; blocks: Graphics[] } {
+function blockout(
+  room: RoomDef,
+  p: Projection,
+  grid: World["walkmap"],
+  style: BlockoutStyle,
+): { floor: Graphics; walls: { view: Graphics; tile: Vec2 }[] } {
   const floor = new Graphics();
-  const blocks: Graphics[] = [];
+  const walls: { view: Graphics; tile: Vec2 }[] = [];
   for (let y = 0; y < grid.rows; y++)
     for (let x = 0; x < grid.cols; x++) {
       const pts = tileOutline(p, x, y);
@@ -481,18 +553,14 @@ function blockout(room: RoomDef, p: Projection, grid: World["walkmap"], style: B
       const wall = room.walkmap[y]?.[x] === "#";
       floor.poly(pts).fill(open ? style.floor[(x + y) % 2]! : wall ? style.wallTop : style.blocked);
       if (!wall || p.kind !== "isometric") continue;
-      const lift = style.wallHeight ?? room.tile.height;
-      const [tx, ty, rx, ry, bx, by, lx, ly] = pts as [number, number, number, number, number, number, number, number];
-      const g = new Graphics()
-        .poly([lx, ly, bx, by, bx, by - lift, lx, ly - lift])
-        .fill(style.wallLeft)
-        .poly([bx, by, rx, ry, rx, ry - lift, bx, by - lift])
-        .fill(style.wallRight)
-        .poly([tx, ty - lift, rx, ry - lift, bx, by - lift, lx, ly - lift])
-        .fill(style.wallTop);
+      const view = drawBlock(p, x, y, 0, style.wallHeight ?? room.tile.height, {
+        top: style.wallTop,
+        left: style.wallLeft,
+        right: style.wallRight,
+      });
       // Sort by the tile centre, same key actors use, so a wall in front of an actor covers it.
-      g.zIndex = p.tileToScreen(x, y).y;
-      blocks.push(g);
+      view.zIndex = p.tileToScreen(x, y).y;
+      walls.push({ view, tile: { x, y } });
     }
-  return { floor, blocks };
+  return { floor, walls };
 }

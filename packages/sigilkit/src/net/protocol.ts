@@ -1,4 +1,4 @@
-import type { Facing, TilePos } from "../core/index";
+import type { Facing, LevelTilePos } from "../core/index";
 
 /**
  * Wire protocol. v0 model: shared presence, local narrative.
@@ -7,7 +7,8 @@ import type { Facing, TilePos } from "../core/index";
  * server-owned story state is a later layer (see docs/ARCHITECTURE.md).
  */
 export type ClientMessage =
-  | { t: "walk"; to: TilePos }
+  /** `to.level` picks the floor in multi-level rooms; omitted, the base level. */
+  | { t: "walk"; to: LevelTilePos }
   | { t: "chat"; text: string };
 
 export interface ActorSnapshot {
@@ -18,6 +19,8 @@ export interface ActorSnapshot {
   sprite: string;
   /** Tiles per second, so clients animate others at server speed. */
   speed: number;
+  /** Level in a multi-level room; absent means the base level. */
+  level?: string;
 }
 
 export type ServerMessage =
@@ -25,9 +28,9 @@ export type ServerMessage =
   | { t: "joined"; id: string; actor: ActorSnapshot }
   | { t: "left"; id: string }
   /** Target tiles, not interpolated positions: clients animate locally. */
-  | { t: "moves"; moves: Record<string, TilePos> }
+  | { t: "moves"; moves: Record<string, LevelTilePos> }
   /** Authoritative correction when a client's own position drifted. */
-  | { t: "correct"; at: TilePos }
+  | { t: "correct"; at: LevelTilePos }
   | { t: "chat"; from: string; name: string; text: string }
   | { t: "error"; message: string };
 
@@ -56,7 +59,10 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   const msg = m as Record<string, unknown>;
   if (msg.t === "walk") {
     const to = msg.to as Record<string, unknown> | undefined;
-    if (to && Number.isInteger(to.x) && Number.isInteger(to.y)) return { t: "walk", to: { x: to.x as number, y: to.y as number } };
+    const level = to?.level;
+    const levelIsValid = level === undefined || (typeof level === "string" && /^[\w-]{1,64}$/.test(level));
+    if (to && Number.isInteger(to.x) && Number.isInteger(to.y) && levelIsValid)
+      return { t: "walk", to: { x: to.x as number, y: to.y as number, ...(level ? { level: level as string } : {}) } };
   }
   if (msg.t === "chat" && typeof msg.text === "string") {
     const text = msg.text.trim().slice(0, MAX_CHAT);

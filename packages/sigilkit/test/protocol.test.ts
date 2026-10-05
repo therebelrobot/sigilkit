@@ -7,6 +7,15 @@ describe("protocol", () => {
     expect(parseClientMessage(JSON.stringify({ t: "chat", text: "  hi  " }))).toEqual({ t: "chat", text: "hi" });
   });
 
+  it("carries a level on walk intents, and rejects odd ones", () => {
+    expect(parseClientMessage(JSON.stringify({ t: "walk", to: { x: 2, y: 3, level: "roof" } }))).toEqual({
+      t: "walk",
+      to: { x: 2, y: 3, level: "roof" },
+    });
+    expect(parseClientMessage(JSON.stringify({ t: "walk", to: { x: 2, y: 3, level: 7 } }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ t: "walk", to: { x: 2, y: 3, level: "<script>" } }))).toBeNull();
+  });
+
   it("rejects junk", () => {
     expect(parseClientMessage("nope")).toBeNull();
     expect(parseClientMessage(JSON.stringify({ t: "walk", to: { x: 1.5, y: 0 } }))).toBeNull();

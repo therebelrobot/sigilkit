@@ -1,0 +1,1017 @@
+diff --git a/apps/demo/src/game.ts b/apps/demo/src/game.ts
+index baa156a..53de82a 100644
+--- a/apps/demo/src/game.ts
++++ b/apps/demo/src/game.ts
+@@ -186,6 +186,8 @@ const watchtowerBase = {
+   ],
+   // Too low for Wren (two blocks tall): she has to go round through the annex.
+   clearances: [{ tiles: [{ x: 5, y: 6 }], height: 16 }],
++  // The door from the hall into the annex starts shut; using it opens it (see main.ink).
++  doors: [{ id: "annex-door", tiles: [{ x: 5, y: 2 }], openWhen: "annex_door_open" }],
+   entries: { path: { at: { x: 1, y: 9 }, facing: "up" } },
+ } satisfies Omit<RoomDef, "hotspots">;
+ 
+@@ -200,6 +202,16 @@ export const watchtower = defineRoom({
+       default: "walk",
+       verbs: { walk: "watchtower_leave", look: "watchtower_path_look" },
+     },
++    {
++      id: "annex-door",
++      name: "annex door",
++      shape: tileArea({ ...watchtowerBase, hotspots: [] }, 5, 2, 1, 1, 40),
++      standAt: { x: 4, y: 2 },
++      face: "right",
++      default: "use",
++      when: (w) => !w.flag("annex_door_open"),
++      verbs: { use: "annex_door_use", look: "annex_door_look" },
++    },
+     {
+       id: "lantern",
+       name: "storm lantern",
+@@ -233,7 +245,7 @@ export const game = defineGame({
+     can: { name: "watering can", icon: "can", verbs: { look: "can_look" }, with: { planter: "planter_water", "planter-box": "box_water" } },
+   },
+   rooms: { greenhouse, rooftop, watchtower },
+-  flags: { roof_unlocked: false },
++  flags: { roof_unlocked: false, annex_door_open: false },
+   fallback: (verb) =>
+     ({ take: "I'll leave that where it is.", talk: "It doesn't say much.", use: "That doesn't do anything." })[verb] ??
+     "Nothing interesting.",
+diff --git a/apps/demo/src/story/main.ink b/apps/demo/src/story/main.ink
+index 241b0da..923daf0 100644
+--- a/apps/demo/src/story/main.ink
++++ b/apps/demo/src/story/main.ink
+@@ -6,6 +6,7 @@
+ // Globals declared here mirror world flags both ways.
+ 
+ VAR planter_watered = false
++VAR annex_door_open = false
+ VAR took_can = false
+ VAR roof_unlocked = false
+ VAR met_moth = false
+@@ -159,3 +160,12 @@ Wren: Still warm. Whoever lit it isn't far.
+ === telescope_look ===
+ Wren: Pointed at the hills. Somebody's been watching for something.
+ -> END
++
++=== annex_door_look ===
++Wren: A heavy door. The bolt's on this side.
++-> END
++
++=== annex_door_use ===
++Wren: Let's see what's through here.
++~ annex_door_open = true
++-> END
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+index 19ac939..ba95797 100644
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -87,7 +87,9 @@ A room can stack floors and divide itself into named spaces, all as data on `Roo
+   - `reveal: "once"` hides an area under fog until the player first enters. The reveal is saved in `WorldState.revealed`, and `>>> reveal <area>` lifts it from a script. `reveal: "inside"` shows the area only while the player is in it.
+   - Hotspots whose `standAt` is fogged or cut away, and actors in either, can't be picked or focused.
+ 
+-All of this is headless and tested in `test/levels.test.ts`. The renderer only reads it: see "Props, layers and the blockout".
++- **Doors and runtime walkability:** `RoomDef.doors` lists tiles that are walkable only while a door is open: while a flag is truthy (`openWhen: "cellar_door_open"`, so `>>> set cellar_door_open true` opens it) or while a function returns true. `world.setWalkable(tile, walkable | null, room?)` changes any tile for good (a wall knocked through, a rockfall), wins over doors, and is saved in `WorldState.walkable`; `>>> block x y [level]` and `>>> unblock x y [level]` do the same from Ink. grid-engine reads walkability live from the layout (its collision cache stays off), so a change takes effect at once. Actors mid-walk stop and their walk re-plans from where they are, keeping the same promise, so a door slamming in front of someone sends them round another way. A change emits `walkableChanged`, and the cutaway is recomputed.
++
++All of this is headless and tested in `test/levels.test.ts` and `test/doors.test.ts`. The renderer only reads it: see "Props, layers and the blockout".
+ 
+ ### Interaction
+ 
+@@ -120,7 +122,7 @@ Gamepad logic runs on plain `PadSnapshot` objects, so it's unit-tested without t
+ 
+ ### Commands
+ 
+-Commands are the verbs of scripting, usable from Ink (`>>> walk wren 4 6`), from TS (`world.command("walk wren 4 6")`) or as methods (`world.walk(...)`). Built-ins: `walk face say wait goto give take set show hide place music sfx reveal`. `walk` and `place` take an optional level after the coordinates (`>>> walk wren 3 2 roof`). Add your own with `world.commands.set(name, fn)`; async commands are awaited, so cutscenes are just sequential lines.
++Commands are the verbs of scripting, usable from Ink (`>>> walk wren 4 6`), from TS (`world.command("walk wren 4 6")`) or as methods (`world.walk(...)`). Built-ins: `walk face say wait goto give take set show hide place music sfx reveal block unblock`. `walk` and `place` take an optional level after the coordinates (`>>> walk wren 3 2 roof`). Add your own with `world.commands.set(name, fn)`; async commands are awaited, so cutscenes are just sequential lines.
+ 
+ `wait` uses world time, not wall time, so tests and servers are deterministic.
+ 
+@@ -166,7 +168,7 @@ Dialog defaults to the DOM box: it scales with system font settings and reaches
+ - **Animated props:** `RoomDef.props` entries can be placed by `tile` (fractional tiles centre a prop across several) and given an `id`. A renderer `props` factory returns a `PropDisplay` for any of them; it's updated every frame with the world, and depth-sorts with actors. Props the factory skips fall back to their static `asset`, anchored bottom-centre on a tile (top-left at an `at` point) unless `anchor` says otherwise. This is how scenery reacts to game state without becoming fake actors.
+ - **Effect layers:** `renderer.layers.floor` sits on the ground under walls, props and actors (paths, ripples, decals); `renderer.layers.world` is above them (particles, auras). Both are in room pixels and follow the camera. `renderer.layers.overlay` covers the frame in logical pixels (tints, flashes, static).
+ - **Blockout:** rooms without art draw from the walkmap. `'#'` is wall, raised in isometric rooms; other non-`'.'` characters are blocked floor under furniture. `blockout: { floor, blocked, wallTop, wallLeft, wallRight, wallHeight, slabThickness }` sets the palette, and `RoomDef.wallHeight` overrides the height per room. `blockout: false` turns it off for games that draw rooms from runtime tiles. Raised levels draw as slabs (over something walkable) or solid blocks (over nothing), with stair risers and their own walls.
+-- **Cutaways, shade and fog:** every wall, slab, riser and prop is a "room piece" tagged with its level and tiles. Pieces the World reports as cut away, plus props listed in the interior's `cover`, fade to `areas.cutawayAlpha`. While the player is in an interior, a shade covers the rest of the room, with the interior's floor and the space above it left clear (an inverse mask). Unrevealed areas sit under fog drawn tile by tile in the depth-sorted layer, so walls in front of them still draw on top. All of it fades over `areas.fadeMs`. `<Stage areas={{ … }}>` tunes the look.
++- **Cutaways, shade and fog:** every wall, slab, riser and prop is a "room piece" tagged with its level and tiles. Pieces the World reports as cut away, plus props listed in the interior's `cover`, fade to `areas.cutawayAlpha`. While the player is in an interior, a shade covers the rest of the room, with the interior's floor and the space above it left clear (an inverse mask). Unrevealed areas have their floor under fog (a layer between the floor and everything standing on it) and every piece and actor in them hidden; their walls stay, so the player sees a room's shape but not what's in it. Shut doors draw as door-coloured blocks in the blockout. All of it fades over `areas.fadeMs`. `<Stage areas={{ … }}>` tunes the look.
+ 
+ ## Multiplayer (optional)
+ 
+@@ -185,7 +187,7 @@ browser ──ws──► Worker fetch ──► createPartyHandler(verify)
+ - Each client animates other players locally from those targets, and predicts its own movement. The server corrects it only if a walk genuinely failed.
+ - Story, dialog and NPCs run per client. Two players can be mid-conversation with the same NPC without interfering.
+ - Changing rooms reconnects to that room's Durable Object.
+-- Protocol: `walk`, `chat` up; `welcome`, `joined`, `left`, `moves`, `correct`, `chat`, `error` down. Tile positions carry an optional `level` for multi-level rooms; the server re-plans stair routes itself. Messages are validated and rate-limited per connection; a second tab with the same identity replaces the first.
++- Protocol: `walk`, `chat` up; `welcome`, `joined`, `left`, `moves`, `correct`, `chat`, `error` down. Tile positions carry an optional `level` for multi-level rooms; the server re-plans stair routes itself. Doors opened by flags are per-client in v0 (story state is local), so a door the server doesn't know is open blocks nothing there; shared doors need server-owned flags (layer 1 below). Messages are validated and rate-limited per connection; a second tab with the same identity replaces the first.
+ 
+ **Auth: Better Auth.** `betterAuthVerifier(auth)` when Better Auth runs in the same Worker, or `betterAuthRemoteVerifier(url)` for a separate auth service. Browsers can't set headers on WebSockets, so a `?token=` from Better Auth's bearer plugin is promoted to an `Authorization` header. Same-origin cookie sessions work without it. `guestVerifier` is for local development only.
+ 
+diff --git a/docs/LEVEL_DESIGN.md b/docs/LEVEL_DESIGN.md
+index 5f3df2c..945f194 100644
+--- a/docs/LEVEL_DESIGN.md
++++ b/docs/LEVEL_DESIGN.md
+@@ -295,6 +295,37 @@ Rules that keep cutaways clean:
+ 
+ A hidden area's hotspots and actors can't be clicked or focused. `>>> reveal annex` reveals a `"once"` area without walking in: for a map, a window or a story beat. `onEnter` on an area runs every time the player walks in, which is the place for the first-visit line (`{ annex_enter == 1: … }`).
+ 
++### Doors, gates and dungeons
++
++Rooms of a dungeon on one floor are just areas on one walkmap, with doorways between them:
++
++- Each room is an area (`reveal: "once"` for map memory, `"inside"` for torchlight: only the room you're in), and `interior: true` if it has walls the cutaway should lift.
++- **Doors** that open and shut are `doors`: tiles written as `.` in the walkmap that are walkable only while the door is open.
++
++  ```ts
++  doors: [
++    { id: "cellar-door", tiles: [{ x: 5, y: 2 }], openWhen: "cellar_door_open" }, // a flag
++    { id: "portcullis", tiles: [{ x: 9, y: 4 }, { x: 10, y: 4 }], openWhen: (w) => w.has("winch_handle") },
++  ],
++  ```
++
++  ```ink
++  === cellar_door_use ===
++  { has_item("iron_key"):
++      >>> sfx door-unlock
++      ~ cellar_door_open = true
++  - else:
++      Wren: Locked.
++  }
++  -> END
++  ```
++
++  Give each door a hotspot (with `when` hiding it once it's open, if it has nothing more to say), and its flag in `game.flags` and as a `VAR`.
++
++- **One-off changes** (a wall knocked through, a rockfall, a bridge burnt) use `world.setWalkable({ x, y, level }, false)` or, in Ink, `>>> block 4 7` and `>>> unblock 4 7`. They're saved with the game and win over doors; `setWalkable(tile, null)` hands a tile back to the room and its doors. The blockout floor recolours; painted art needs a prop that shows the change.
++- **People react:** anyone walking re-plans the moment a door shuts or opens: they go round if there's another way, through if one just opened, or stop as close as they can get.
++- **Big dungeons:** one room is fine for a floor of a few hundred tiles. Split larger ones into several rooms joined with `goto` at natural breaks (a stairwell, a long tunnel).
++
+ ### Testing it
+ 
+ `world.levelOf(id)`, `world.areaOf()`, `world.cutaway()`, `world.isCutAway(level, x, y)` and `world.isAreaRevealed(id)` are all headless, so the rules can be tested with the same `runUntilSettled` helper as section 9:
+@@ -385,6 +416,7 @@ When the blockout plays well:
+ - [ ] Multi-level: every level reachable by stairs; roof elevation equals `wallHeight`
+ - [ ] Every character who needs to can reach every place it needs to, at its height
+ - [ ] Interiors walled in, doorways outside the area; each one checked from inside
+-- [ ] Attached rooms: `reveal` set, an `onEnter` line for the first visit
++- [ ] Attached rooms: `reveal` set, an `onEnter` line for the first visit, furniture tiles tagged with the room's letter
++- [ ] Doors: flag in `game.flags` and Ink, a hotspot to open each, and a way round (or a way out) if one shuts behind the player
+ - [ ] Nothing interactive is hidden behind a prop or an NPC
+ - [ ] Music, effects and art in place, or deliberately blockout for now
+diff --git a/docs/VISUAL_DESIGN.md b/docs/VISUAL_DESIGN.md
+index 27ce4dc..769ab76 100644
+--- a/docs/VISUAL_DESIGN.md
++++ b/docs/VISUAL_DESIGN.md
+@@ -309,7 +309,27 @@ A cutaway fades **pieces**, not pixels. Anything that should fade while the play
+ 
+ ### Fog over attached rooms
+ 
+-Unrevealed areas are covered tile by tile with fog (the letterbox colour by default), reaching `headroom` pixels above the floor: the room's wall height, unless `areas.headroom` says otherwise. Walls in front of a fogged room still draw on top. Give attached rooms solid walls on the sides the player sees, so the fog reads as "a room you haven't been into" rather than a hole in the map.
++An unrevealed area's floor is covered with fog (the letterbox colour by default), and everything standing in it (props, furniture, actors) is hidden. Its walls stay visible, so the player sees the shape of a room they haven't been into, but not what's in it, and the fog never covers anything standing behind it.
++
++- **Tag furniture tiles too.** A prop is hidden when the tile it stands on is in an unrevealed area, so give blocked furniture tiles the room's letter in the `areamap`, not just the walkable floor.
++- **Give attached rooms solid walls** on the sides the player sees, so the fog reads as "a room you haven't been into" rather than a hole in the map.
++
++### Doors
++
++Shut doors (`RoomDef.doors`) draw as door-coloured blocks the height of a wall in the blockout (`blockout.door` sets the colour) and disappear when the door opens. With painted art, draw the door as a prop on the door tile and show its open or shut state from the same flag in a prop factory:
++
++```ts
++const props: PropFactory = (prop, { world }) => {
++  if (prop.id !== "cellar-door") return null;
++  const doorSprite = new Sprite(doorShutTexture);
++  doorSprite.anchor.set(0.5, 1);
++  return {
++    view: doorSprite,
++    update: () => (doorSprite.texture = world.flag("cellar_door_open") ? doorOpenTexture : doorShutTexture),
++    destroy: () => doorSprite.destroy(),
++  };
++};
++```
+ 
+ ### Tuning the look
+ 
+diff --git a/packages/sigilkit/src/core/commands.ts b/packages/sigilkit/src/core/commands.ts
+index 145656f..2d22e68 100644
+--- a/packages/sigilkit/src/core/commands.ts
++++ b/packages/sigilkit/src/core/commands.ts
+@@ -41,6 +41,9 @@ export function builtinCommands(): Map<string, CommandFn> {
+     ["hide", ([id], w) => w.setVisible(id!, false)],
+     // place <actor> <x> <y> [level]
+     ["place", ([id, x, y, level], w) => w.place(id!, { x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) })],
++    // block <x> <y> [level] / unblock <x> <y> [level]: change a tile's walkability for good
++    ["block", ([x, y, level], w) => w.setWalkable({ x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) }, false)],
++    ["unblock", ([x, y, level], w) => w.setWalkable({ x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) }, true)],
+     // reveal <area>: lift a reveal-once area's fog without walking in
+     ["reveal", ([area], w) => w.revealArea(area!)],
+     ["music", ([key], w) => w.events.emit("music", { key: key ?? null })],
+diff --git a/packages/sigilkit/src/core/levels.ts b/packages/sigilkit/src/core/levels.ts
+index f188906..28b6083 100644
+--- a/packages/sigilkit/src/core/levels.ts
++++ b/packages/sigilkit/src/core/levels.ts
+@@ -53,6 +53,8 @@ export class RoomLayout {
+   #stepElevationByKey = new Map<string, number>();
+   #areaByKey = new Map<string, AreaDef>();
+   #explicitClearanceByKey = new Map<string, number>();
++  /** Walkability as authored (stair steps opened), before doors and scripts change it. */
++  #authoredBlockedByLevel = new Map<string, number[][]>();
+   #clearanceByKey = new Map<string, number>();
+   #areaById = new Map<string, AreaDef>();
+ 
+@@ -92,6 +94,14 @@ export class RoomLayout {
+     });
+ 
+     for (const stair of room.stairs ?? []) this.#addStair(stair.from ?? this.baseLevel, stair.to, stair.steps, stair.top);
++    for (const level of this.levels) this.#authoredBlockedByLevel.set(level.id, level.blockedData.map((row) => [...row]));
++    for (const door of room.doors ?? []) {
++      const levelId = door.level ?? this.baseLevel;
++      this.level(levelId);
++      for (const tile of door.tiles)
++        if (!this.walkable(levelId, tile.x, tile.y))
++          throw new Error(`room "${room.id}": door "${door.id}" tile (${tile.x}, ${tile.y}) must be '.' in the walkmap of "${levelId}"`);
++    }
+     for (const clearance of room.clearances ?? []) {
+       const levelId = clearance.level ?? this.baseLevel;
+       this.level(levelId);
+@@ -102,6 +112,25 @@ export class RoomLayout {
+     }
+   }
+ 
++  /** Walkability as written in the room, before doors and scripts. */
++  authoredWalkable(levelId: string, tileX: number, tileY: number): boolean {
++    return this.#authoredBlockedByLevel.get(levelId)?.[tileY]?.[tileX] === 0;
++  }
++
++  /**
++   * Change a tile's walkability at runtime. Returns whether anything changed. The World
++   * calls this for doors and `setWalkable`; game code should go through the World.
++   */
++  setWalkable(levelId: string, tileX: number, tileY: number, walkable: boolean): boolean {
++    const row = this.level(levelId).blockedData[tileY];
++    if (!row || row[tileX] === undefined) return false;
++    const blocked = walkable ? 0 : 1;
++    if (row[tileX] === blocked) return false;
++    row[tileX] = blocked;
++    this.#clearanceByKey.clear(); // floors overhead may have changed
++    return true;
++  }
++
+   /**
+    * Headroom above a tile's floor, in pixels: up to the nearest floor, step or wall
+    * on a higher level over the same tile, or a `clearances` entry if that's lower.
+diff --git a/packages/sigilkit/src/core/types.ts b/packages/sigilkit/src/core/types.ts
+index a30f020..4294437 100644
+--- a/packages/sigilkit/src/core/types.ts
++++ b/packages/sigilkit/src/core/types.ts
+@@ -128,6 +128,23 @@ export interface StairDef {
+   top: TilePos;
+ }
+ 
++/**
++ * A door, gate, portcullis or bridge: tiles that are walkable only while it's open.
++ * Write the tiles as '.' in the walkmap; the door closes them off while it's shut.
++ */
++export interface DoorDef {
++  id: string;
++  /** Level the tiles are on. Default: the base level. */
++  level?: string;
++  /** Usually one tile; two for a double door, a row for a portcullis or a bridge. */
++  tiles: TilePos[];
++  /**
++   * Open while this flag is truthy (`>>> set cellar_door_open true` opens it), or
++   * while the function returns true. Shut otherwise.
++   */
++  openWhen: string | ((world: import("./world").World) => boolean);
++}
++
+ /**
+  * Low headroom over particular tiles: a one-block doorway, a crawlspace, a vent.
+  * Clearance under raised levels (a balcony, an upper floor) is worked out
+@@ -200,6 +217,8 @@ export interface RoomDef {
+   areas?: AreaDef[];
+   /** Low openings: tiles with less headroom than the levels alone give them. */
+   clearances?: ClearanceDef[];
++  /** Doors and gates: tiles walkable only while open. */
++  doors?: DoorDef[];
+   /**
+    * Movement directions. 8 allows diagonal steps, which makes stick control in
+    * isometric rooms feel right (screen-up is a grid diagonal). Default 4.
+@@ -286,6 +305,8 @@ export interface WorldState {
+   script?: string;
+   /** Areas revealed by entering them (`reveal: "once"`), as "roomId:areaId". */
+   revealed?: string[];
++  /** Tiles whose walkability a script changed (`world.setWalkable`), as "roomId:level:x,y" -> walkable. */
++  walkable?: Record<string, boolean>;
+ }
+ 
+ export interface DialogLine {
+diff --git a/packages/sigilkit/src/core/walkmap.ts b/packages/sigilkit/src/core/walkmap.ts
+index 7d6763c..2249660 100644
+--- a/packages/sigilkit/src/core/walkmap.ts
++++ b/packages/sigilkit/src/core/walkmap.ts
+@@ -1,6 +1,6 @@
+-import { ArrayTilemap } from "grid-engine";
++import type { Tile, TileLayer, Tilemap } from "grid-engine";
+ import { RoomLayout } from "./levels";
+-import type { RoomDef } from "./types";
++import type { ProjectionKind, RoomDef } from "./types";
+ 
+ /** grid-engine layer for single-level rooms; multi-level rooms use one layer per level id. */
+ export const CHAR_LAYER = "ground";
+@@ -27,20 +27,91 @@ export function parseWalkmap(lines: string[]): Walkmap & { data: number[][] } {
+ 
+ /**
+  * The grid-engine tilemap for a room: one character layer per level, named by
+- * level id. Levels aren't connected here; the World climbs stairs itself (see
+- * `World.walk`). The returned `walkmap` is the base level, stair steps included.
++ * level id. Tiles read walkability live from the layout, so doors and
++ * `World.setWalkable` take effect immediately (grid-engine's collision cache is
++ * off by default, so nothing goes stale). Levels aren't connected here; the World
++ * climbs stairs itself (see `World.walk`). The returned `walkmap` is the base level.
+  */
+-export function tilemapFor(room: RoomDef): { tilemap: ArrayTilemap; walkmap: Walkmap; layout: RoomLayout } {
++export function tilemapFor(room: RoomDef): { tilemap: Tilemap; walkmap: Walkmap; layout: RoomLayout } {
+   const layout = new RoomLayout(room);
+-  const tilemap = new ArrayTilemap(
+-    Object.fromEntries(layout.levels.map((level) => [level.id, { data: level.blockedData, isCharLayer: true }])),
+-    room.projection,
+-  );
+-  const baseLevel = layout.level();
+   const walkmap: Walkmap = {
+     cols: layout.cols,
+     rows: layout.rows,
+-    walkable: (x, y) => baseLevel.blockedData[y]?.[x] === 0,
++    walkable: (x, y) => layout.walkable(layout.baseLevel, x, y),
+   };
+-  return { tilemap, walkmap, layout };
++  return { tilemap: new LiveLayoutTilemap(layout, room.projection), walkmap, layout };
++}
++
++const COLLIDE_PROPERTY = "ge_collide";
++
++class LiveTile implements Tile {
++  constructor(
++    readonly layout: RoomLayout,
++    readonly levelId: string,
++    readonly tileX: number,
++    readonly tileY: number,
++  ) {}
++  getProperty(name: string): boolean | undefined {
++    return name === COLLIDE_PROPERTY ? !this.layout.walkable(this.levelId, this.tileX, this.tileY) : undefined;
++  }
++  hasProperty(name: string): boolean {
++    return name === COLLIDE_PROPERTY;
++  }
++}
++
++class LiveLevelLayer implements TileLayer {
++  readonly tiles: LiveTile[][];
++  constructor(
++    readonly layout: RoomLayout,
++    readonly levelId: string,
++  ) {
++    this.tiles = Array.from({ length: layout.rows }, (_, tileY) =>
++      Array.from({ length: layout.cols }, (_, tileX) => new LiveTile(layout, levelId, tileX, tileY)),
++    );
++  }
++  getName(): string {
++    return this.levelId;
++  }
++  getProperty(name: string): string | undefined {
++    return name === "ge_charLayer" ? this.levelId : undefined;
++  }
++  hasProperty(name: string): boolean {
++    return name === "ge_charLayer";
++  }
++  getData(): LiveTile[][] {
++    return this.tiles;
++  }
++  isCharLayer(): boolean {
++    return true;
++  }
++}
++
++class LiveLayoutTilemap implements Tilemap {
++  readonly layers: LiveLevelLayer[];
++  #layerById: Map<string, LiveLevelLayer>;
++  constructor(
++    readonly layout: RoomLayout,
++    readonly orientation: ProjectionKind,
++  ) {
++    this.layers = layout.levels.map((level) => new LiveLevelLayer(layout, level.id));
++    this.#layerById = new Map(this.layers.map((layer) => [layer.levelId, layer]));
++  }
++  getWidth(): number {
++    return this.layout.cols;
++  }
++  getHeight(): number {
++    return this.layout.rows;
++  }
++  getOrientation(): ProjectionKind {
++    return this.orientation;
++  }
++  getLayers(): TileLayer[] {
++    return this.layers;
++  }
++  hasTileAt(x: number, y: number, layer?: string): boolean {
++    return !!layer && this.#layerById.has(layer) && x >= 0 && x < this.layout.cols && y >= 0 && y < this.layout.rows;
++  }
++  getTileAt(x: number, y: number, layer?: string): Tile | undefined {
++    return layer ? this.#layerById.get(layer)?.tiles[y]?.[x] : undefined;
++  }
+ }
+diff --git a/packages/sigilkit/src/core/world.ts b/packages/sigilkit/src/core/world.ts
+index fdc204c..492a8d5 100644
+--- a/packages/sigilkit/src/core/world.ts
++++ b/packages/sigilkit/src/core/world.ts
+@@ -24,7 +24,7 @@ import type {
+   VerbId,
+   WorldState,
+ } from "./types";
+-import { DEFAULT_VERBS } from "./types";
++import { DEFAULT_VERBS, type DoorDef } from "./types";
+ import { tilemapFor, type Walkmap } from "./walkmap";
+ 
+ export interface ScriptRunner {
+@@ -46,6 +46,8 @@ export interface WorldEvents extends Record<string, unknown> {
+   areaChanged: { area: string | null; previous: string | null };
+   /** An area with `reveal: "once"` was revealed for good. */
+   areaRevealed: { room: string; area: string };
++  /** Tiles changed walkability: a door opened or shut, or a script called `setWalkable`. */
++  walkableChanged: { tiles: Required<LevelTilePos>[] };
+   actorAdded: { actor: string };
+   actorRemoved: { actor: string };
+ }
+@@ -144,8 +146,18 @@ export class World {
+   #playerArea: string | null = null;
+   /** "level:x,y" keys of tiles cut away for the current interior. */
+   #cutAwayTileKeys = new Set<string>();
++  /** "level:x,y" keys of tiles whose walkability differs from the room as authored. */
++  #changedTileKeys = new Set<string>();
++  /** Bumped whenever walkability changes, so walks in progress know to re-plan. */
++  #walkabilityGeneration = 0;
++  /** Where each actor's current walk is headed, so it can re-plan when tiles change. */
++  #walkDestinationByActor = new Map<string, Required<LevelTilePos>>();
+ 
+   constructor(game: GameDef, options: WorldOptions = {}) {
++    // A flag can open or shut a door.
++    this.events.on("flag", () => {
++      if (this.room) this.#applyWalkability();
++    });
+     // Copy the actor table so addActor() can extend it without touching shared content.
+     this.game = { ...game, actors: { ...game.actors } };
+     this.options = options;
+@@ -226,6 +238,8 @@ export class World {
+   update(deltaMs: number): void {
+     this.#time += deltaMs;
+     this.#grid.update(this.#time, deltaMs);
++    // Doors opened by a function can depend on anything, so check them each frame (cheap).
++    if (this.room.doors?.some((door) => typeof door.openWhen === "function")) this.#applyWalkability();
+     this.#trackPlayerArea(true);
+     if (this.#timers.length) {
+       const due = this.#timers.filter((t) => t.at <= this.#time);
+@@ -336,6 +350,82 @@ export class World {
+     return !this.isCutAway(view.level, tile.x, tile.y);
+   }
+ 
++  // ------------------------------------------------------------- walkability
++
++  /** Whether a door in the current room is open. */
++  isDoorOpen(doorId: string): boolean {
++    const door = this.room.doors?.find((roomDoor) => roomDoor.id === doorId);
++    if (!door) throw new Error(`room "${this.room.id}" has no door "${doorId}"`);
++    return this.#doorIsOpen(door);
++  }
++
++  #doorIsOpen(door: DoorDef): boolean {
++    return typeof door.openWhen === "string" ? Boolean(this.state.flags[door.openWhen]) : door.openWhen(this);
++  }
++
++  /**
++   * Make a tile walkable or not, from now on: a wall knocked through, a rockfall, a
++   * bridge burnt. Saved with the game. `null` puts the tile back the way the room
++   * (and its doors) say. Actors mid-walk re-plan around the change.
++   */
++  setWalkable(tile: LevelTilePos, walkable: boolean | null, roomId: string = this.room.id): void {
++    const level = tile.level ?? (roomId === this.room.id ? this.layout.baseLevel : (this.game.rooms[roomId]?.baseLevel ?? "ground"));
++    const overrideKey = `${roomId}:${level}:${tile.x},${tile.y}`;
++    const overrides = { ...this.state.walkable };
++    if (walkable === null) delete overrides[overrideKey];
++    else overrides[overrideKey] = walkable;
++    this.state.walkable = overrides;
++    if (roomId === this.room.id) this.#applyWalkability();
++  }
++
++  /**
++   * Bring the layout in line with doors and saved overrides. Overrides win; then a
++   * door's tiles are walkable only while it's open; everything else is as authored.
++   */
++  #applyWalkability(quietly = false): void {
++    const desiredByKey = new Map<string, { level: string; x: number; y: number; walkable: boolean }>();
++    for (const door of this.room.doors ?? []) {
++      const level = door.level ?? this.layout.baseLevel;
++      const open = this.#doorIsOpen(door);
++      for (const tile of door.tiles) desiredByKey.set(`${level}:${tile.x},${tile.y}`, { level, x: tile.x, y: tile.y, walkable: open });
++    }
++    const roomPrefix = `${this.room.id}:`;
++    for (const [overrideKey, walkable] of Object.entries(this.state.walkable ?? {})) {
++      if (!overrideKey.startsWith(roomPrefix)) continue;
++      const tileKey = overrideKey.slice(roomPrefix.length);
++      const match = /^(.+):(-?\d+),(-?\d+)$/.exec(tileKey);
++      if (!match || !this.layout.hasLevel(match[1]!)) continue;
++      desiredByKey.set(tileKey, { level: match[1]!, x: Number(match[2]), y: Number(match[3]), walkable });
++    }
++    // Tiles changed before but no longer listed (an override cleared) go back to authored.
++    for (const tileKey of this.#changedTileKeys) {
++      if (desiredByKey.has(tileKey)) continue;
++      const match = /^(.+):(-?\d+),(-?\d+)$/.exec(tileKey)!;
++      const level = match[1]!;
++      const tileX = Number(match[2]);
++      const tileY = Number(match[3]);
++      desiredByKey.set(tileKey, { level, x: tileX, y: tileY, walkable: this.layout.authoredWalkable(level, tileX, tileY) });
++    }
++
++    const changedTiles: Required<LevelTilePos>[] = [];
++    for (const [tileKey, desired] of desiredByKey) {
++      if (this.layout.setWalkable(desired.level, desired.x, desired.y, desired.walkable))
++        changedTiles.push({ x: desired.x, y: desired.y, level: desired.level });
++      if (desired.walkable === this.layout.authoredWalkable(desired.level, desired.x, desired.y)) this.#changedTileKeys.delete(tileKey);
++      else this.#changedTileKeys.add(tileKey);
++    }
++    if (!changedTiles.length) return;
++    this.#cutAwayTileKeys = this.#computeCutAway();
++    if (quietly) return;
++    this.#walkabilityGeneration++;
++    this.events.emit("walkableChanged", { tiles: changedTiles });
++    // Anyone mid-walk stops; their walk sees the change and re-plans from where they are,
++    // around a door that just shut or through one that just opened.
++    for (const actorId of this.#walkDestinationByActor.keys()) {
++      if (this.#grid.hasCharacter(actorId) && !this.#climbs.has(actorId)) this.#grid.stopMovement(actorId);
++    }
++  }
++
+   // ------------------------------------------------------------------ areas
+ 
+   /** The area an actor stands in, if any. */
+@@ -765,9 +855,23 @@ export class World {
+     const fromLevel = this.levelOf(id);
+     const destLevel = this.#levelForDestination(dest, fromLevel);
+     this.events.emit("walk", { actor: id, to: { x: dest.x, y: dest.y, level: destLevel } });
+-    // The common case starts moving right away, so callers can step time immediately.
+-    if (destLevel === fromLevel && !this.#climbs.has(id)) return this.#walkOnLevel(id, dest, destLevel);
+-    return this.#walkAcrossLevels(id, dest, destLevel, walkToken);
++    this.#walkDestinationByActor.set(id, { x: dest.x, y: dest.y, level: destLevel });
++    const attempt = (): Promise<boolean> => {
++      const walkabilityWhenStarted = this.#walkabilityGeneration;
++      // The common case starts moving right away, so callers can step time immediately.
++      const walking =
++        this.levelOf(id) === destLevel && !this.#climbs.has(id)
++          ? this.#walkOnLevel(id, dest, destLevel)
++          : this.#walkAcrossLevels(id, dest, destLevel, walkToken);
++      return walking.then((arrived) => {
++        const isCurrent = this.#walkTokenByActor.get(id) === walkToken;
++        // A door shut (or opened) on the way: plan again from here, same promise for the caller.
++        if (!arrived && isCurrent && this.#walkabilityGeneration !== walkabilityWhenStarted) return attempt();
++        if (isCurrent) this.#walkDestinationByActor.delete(id);
++        return arrived;
++      });
++    };
++    return attempt();
+   }
+ 
+   async #walkAcrossLevels(id: string, dest: TilePos, destLevel: string, walkToken: number): Promise<boolean> {
+@@ -876,6 +980,20 @@ export class World {
+       )[0];
+       if (beside) to = beside;
+     }
++    // Nowhere nearer to go (the target is cut off and we're already as close as we can get):
++    // grid-engine would wait forever for a move it never starts, so answer now.
++    const plannedRoute = this.#grid.findShortestPath(
++      { position: from, charLayer: level },
++      { position: to, charLayer: level },
++      {
++        numberOfDirections: (this.room.directions ?? 4) as unknown as NumberOfDirections,
++        ignoredChars: [id],
++        calculateClosestToTarget: true,
++        isPositionAllowed: (position, charLayer) => this.fits(id, position, charLayer ?? level),
++      },
++    );
++    const closest = plannedRoute.closestToTarget?.position;
++    if (!plannedRoute.path.length && (!closest || (closest.x === from.x && closest.y === from.y))) return Promise.resolve(false);
+     return new Promise((resolve) => {
+       let settled = false;
+       const sub = this.#grid
+@@ -1094,6 +1212,8 @@ export class World {
+     const { tilemap, walkmap, layout } = tilemapFor(room);
+     this.walkmap = walkmap;
+     this.layout = layout;
++    this.#changedTileKeys = new Set();
++    this.#walkDestinationByActor.clear();
+     this.#grid = new GridEngineHeadless(false);
+     this.#grid.create(tilemap, {
+       characters: this.actorsInRoom().map((id) => {
+@@ -1129,6 +1249,7 @@ export class World {
+     this.ui.set({ room: roomId, inventory: this.state.inventory, hover: null, focus: null });
+     this.#playerArea = null;
+     this.#cutAwayTileKeys = new Set();
++    this.#applyWalkability(true);
+     this.events.emit("roomChanged", { room, projection: this.projection });
+     // Arriving inside an area reveals it, but its onEnter is left to the room's own onEnter.
+     this.#trackPlayerArea(false);
+diff --git a/packages/sigilkit/src/pixi/levels.ts b/packages/sigilkit/src/pixi/levels.ts
+index bc21d16..aedc371 100644
+--- a/packages/sigilkit/src/pixi/levels.ts
++++ b/packages/sigilkit/src/pixi/levels.ts
+@@ -13,7 +13,7 @@ export interface AreaLook {
+   fogColor: number;
+   /** Default 1 (opaque). */
+   fogAlpha: number;
+-  /** How far above each floor tile the shade's cut-out and the fog reach, in pixels. Default: the blockout wall height, or two tile heights. */
++  /** How far above each floor tile the shade's cut-out reaches, in pixels. Default: the room's wall height, or two tile heights. */
+   headroom?: number;
+   /** Fade time for all of the above, in ms. Default 350. */
+   fadeMs: number;
+@@ -198,12 +198,13 @@ const approach = (current: number, target: number, maximumChange: number) =>
+  * Per-frame cutaway, shade and fog for a room's areas:
+  * - pieces on cut-away tiles (and an interior's `cover` props) fade to `cutawayAlpha`
+  * - a shade covers the room except the interior the player is in
+- * - unrevealed areas sit under fog, tile by tile, sorted like everything else so
+- *   walls in front of them still draw on top
++ * - unrevealed areas have their floor under fog, and everything standing in them
++ *   (props, furniture, actors) hidden; their walls stay, so you see a room's shape,
++ *   not its contents, and the fog never covers anything behind it
+  */
+ export class AreaEffects {
+   #world: World;
+-  #entities: Container;
++  #fogLayer: Container;
+   #look: AreaLook;
+   #headroom: number;
+   #pieces: RoomPiece[] = [];
+@@ -215,9 +216,9 @@ export class AreaEffects {
+   #shadeHoleArea: string | null = null;
+   #shadeBounds = { x: 0, y: 0, width: 0, height: 0 };
+ 
+-  constructor(world: World, entities: Container, shadeParent: Container, look: AreaLook) {
++  constructor(world: World, fogLayer: Container, shadeParent: Container, look: AreaLook) {
+     this.#world = world;
+-    this.#entities = entities;
++    this.#fogLayer = fogLayer;
+     this.#look = look;
+     this.#headroom = look.headroom ?? 32;
+     this.#shade.alpha = 0;
+@@ -247,13 +248,10 @@ export class AreaEffects {
+       const revealed = world.isAreaRevealed(area.id);
+       const fogTiles = world.layout.areaTiles(area.id).map((tile) => {
+         const elevation = world.layout.elevationAt(tile.level, tile.x, tile.y);
+-        const fogTile = new Graphics()
+-          .poly(tilePrism(world.projection, tile.x, tile.y, elevation, this.#headroom))
+-          .fill(this.#look.fogColor);
+-        // Just in front of whatever stands on the tile, behind anything on the next tile forward.
+-        fogTile.zIndex = sortKeyFor(world.projection, tile.x, tile.y, elevation) + 0.004;
++        // The floor only: what stands there is hidden separately, and walls stay visible.
++        const fogTile = new Graphics().poly(tileOutline(world.projection, tile.x, tile.y, elevation)).fill(this.#look.fogColor);
+         fogTile.alpha = revealed ? 0 : this.#look.fogAlpha;
+-        this.#entities.addChild(fogTile);
++        this.#fogLayer.addChild(fogTile);
+         return fogTile;
+       });
+       this.#fogByArea.set(area.id, fogTiles);
+@@ -272,6 +270,14 @@ export class AreaEffects {
+     return piece.tiles.some((tile) => this.#world.isCutAway(piece.level, tile.x, tile.y));
+   }
+ 
++  /** Whether a piece stands in an area that isn't revealed yet (furniture in an unexplored room). */
++  isHidden(piece: RoomPiece): boolean {
++    return piece.tiles.some((tile) => {
++      const area = this.#world.layout.areaAt(piece.level, tile.x, tile.y);
++      return !!area && !this.#world.isAreaRevealed(area.id);
++    });
++  }
++
+   /** Target alpha for something standing at a tile: faded if cut away. */
+   get cutawayAlpha(): number {
+     return this.#look.cutawayAlpha;
+@@ -283,7 +289,7 @@ export class AreaEffects {
+     const interior = world.cutaway();
+ 
+     for (const piece of this.#pieces) {
+-      const targetAlpha = this.isCut(piece, interior) ? this.#look.cutawayAlpha : 1;
++      const targetAlpha = this.isHidden(piece) ? 0 : this.isCut(piece, interior) ? this.#look.cutawayAlpha : 1;
+       piece.view.alpha = approach(piece.view.alpha, targetAlpha, fadeStep);
+     }
+ 
+diff --git a/packages/sigilkit/src/pixi/renderer.ts b/packages/sigilkit/src/pixi/renderer.ts
+index 3b67dad..a9cf23c 100644
+--- a/packages/sigilkit/src/pixi/renderer.ts
++++ b/packages/sigilkit/src/pixi/renderer.ts
+@@ -31,6 +31,8 @@ export interface BlockoutStyle {
+   wallHeight?: number;
+   /** Thickness of raised levels' floor slabs, in pixels. Default 4. */
+   slabThickness?: number;
++  /** Colour of shut doors (`RoomDef.doors`), drawn as blocks the height of a wall. */
++  door?: number;
+ }
+ 
+ const DEFAULT_BLOCKOUT: BlockoutStyle = {
+@@ -39,6 +41,7 @@ const DEFAULT_BLOCKOUT: BlockoutStyle = {
+   wallTop: 0x35504a,
+   wallLeft: 0x2a3d3a,
+   wallRight: 0x223230,
++  door: 0x6b4e3d,
+ };
+ 
+ export interface RendererOptions {
+@@ -132,11 +135,12 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
+   const worldFx = new Container();
+   const overlay = new Container();
+   const shadeLayer = new Container();
+-  camera.addChild(floor, floorFx, debugLayer, entities, shadeLayer, focusLayer, worldFx, speech);
++  const fogLayer = new Container();
++  camera.addChild(floor, floorFx, fogLayer, debugLayer, entities, shadeLayer, focusLayer, worldFx, speech);
+   const blockoutStyle: BlockoutStyle = { ...DEFAULT_BLOCKOUT, ...(opts.blockout || {}) };
+   const areaEffects = new AreaEffects(
+     world,
+-    entities,
++    fogLayer,
+     shadeLayer,
+     { ...DEFAULT_AREA_LOOK, fogColor: opts.background ?? 0x000000, ...opts.areas },
+   );
+@@ -170,10 +174,14 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
+   const props: Sprite[] = [];
+   const propDisplays: PropDisplay[] = [];
+   const blocks: Graphics[] = [];
++  const doorBlocks: { view: Graphics; level: string; tile: Vec2 }[] = [];
++  let redrawBlockoutFloor: (() => void) | null = null;
+   let roomBounds = { x: 0, y: 0, width: W, height: H };
+   let debug = opts.debug ?? false;
+ 
+   const clearRoom = () => {
++    doorBlocks.length = 0;
++    redrawBlockoutFloor = null;
+     for (const d of displays.values()) d.destroy();
+     displays.clear();
+     for (const p of props) p.destroy();
+@@ -216,6 +224,30 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
+       const roomBlockoutStyle = room.wallHeight === undefined ? blockoutStyle : { ...blockoutStyle, wallHeight: room.wallHeight };
+       const b = blockout(room, projection, grid, roomBlockoutStyle);
+       floor.addChild(b.floor);
++      redrawBlockoutFloor = () => {
++        const redrawn = blockout(room, projection, grid, roomBlockoutStyle, false).floor;
++        floor.removeChildren().forEach((child) => child.destroy());
++        floor.addChild(redrawn);
++      };
++      // Shut doors: a block the height of a wall, hidden while the door is open.
++      const doorHeight = roomBlockoutStyle.wallHeight ?? room.tile.height;
++      for (const door of room.doors ?? []) {
++        const doorLevel = door.level ?? world.layout.baseLevel;
++        const doorElevation = world.layout.level(doorLevel).elevation;
++        for (const tile of door.tiles) {
++          const doorDarker = shade(roomBlockoutStyle.door ?? 0x6b4e3d, 0.75);
++          const doorBlock = drawBlock(projection, tile.x, tile.y, doorElevation, doorElevation + doorHeight, {
++            top: roomBlockoutStyle.door ?? 0x6b4e3d,
++            left: roomBlockoutStyle.door ?? 0x6b4e3d,
++            right: doorDarker,
++          });
++          doorBlock.zIndex = sortKeyFor(projection, tile.x, tile.y, doorElevation);
++          doorBlock.visible = !world.layout.walkable(doorLevel, tile.x, tile.y);
++          blocks.push(doorBlock);
++          doorBlocks.push({ view: doorBlock, level: doorLevel, tile });
++          addPiece({ view: doorBlock, level: doorLevel, tiles: [tile] });
++        }
++      }
+       for (const wall of b.walls) {
+         blocks.push(wall.view);
+         addPiece({ view: wall.view, level: world.layout.baseLevel, tiles: [wall.tile] });
+@@ -299,6 +331,12 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
+   };
+ 
+   const offRoom = world.events.on("roomChanged", ({ room, projection }) => void buildRoom(room, projection));
++  // Doors opening and scripts changing tiles: show doors, recolour the blockout floor.
++  const offWalkable = world.events.on("walkableChanged", () => {
++    for (const doorBlock of doorBlocks) doorBlock.view.visible = !world.layout.walkable(doorBlock.level, doorBlock.tile.x, doorBlock.tile.y);
++    redrawBlockoutFloor?.();
++    drawDebug();
++  });
+   await buildRoom(world.room, world.projection);
+ 
+   // ---------------------------------------------------------------- speech
+@@ -492,6 +530,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
+       if (destroyed) return;
+       destroyed = true;
+       offRoom();
++      offWalkable();
+       resizeObserver.disconnect();
+       app.canvas.removeEventListener("contextmenu", noMenu);
+       clearRoom();
+@@ -543,6 +582,7 @@ function blockout(
+   p: Projection,
+   grid: World["walkmap"],
+   style: BlockoutStyle,
++  withWalls = true,
+ ): { floor: Graphics; walls: { view: Graphics; tile: Vec2 }[] } {
+   const floor = new Graphics();
+   const walls: { view: Graphics; tile: Vec2 }[] = [];
+@@ -552,7 +592,7 @@ function blockout(
+       const open = grid.walkable(x, y);
+       const wall = room.walkmap[y]?.[x] === "#";
+       floor.poly(pts).fill(open ? style.floor[(x + y) % 2]! : wall ? style.wallTop : style.blocked);
+-      if (!wall || p.kind !== "isometric") continue;
++      if (!withWalls || !wall || p.kind !== "isometric") continue;
+       const view = drawBlock(p, x, y, 0, style.wallHeight ?? room.tile.height, {
+         top: style.wallTop,
+         left: style.wallLeft,
+@@ -564,3 +604,9 @@ function blockout(
+     }
+   return { floor, walls };
+ }
++
++/** A colour scaled toward black, for the shaded side of a block. */
++function shade(color: number, brightness: number): number {
++  const channel = (shift: number) => Math.round(((color >> shift) & 0xff) * brightness) << shift;
++  return channel(16) | channel(8) | channel(0);
++}
+diff --git a/packages/sigilkit/test/doors.test.ts b/packages/sigilkit/test/doors.test.ts
+new file mode 100644
+index 0000000..5044787
+--- /dev/null
++++ b/packages/sigilkit/test/doors.test.ts
+@@ -0,0 +1,181 @@
++import { describe, expect, it } from "vitest";
++import { defineGame, RoomLayout, World, type RoomDef } from "../src/core/index";
++
++/*
++ * Two corridors joined by a wall with two gaps: a door at (2,1) and an open arch at (5,1).
++ *
++ *   y0  ......
++ *   y1  ##D##.     D: the cellar door
++ *   y2  ......
++ */
++const cellar: RoomDef = {
++  id: "cellar",
++  projection: "orthogonal",
++  tile: { width: 16, height: 16 },
++  walkmap: ["......", "##.##.", "......"],
++  doors: [{ id: "cellar-door", tiles: [{ x: 2, y: 1 }], openWhen: "cellar_door_open" }],
++  entries: { start: { at: { x: 2, y: 0 } } },
++  hotspots: [],
++};
++
++const game = defineGame({
++  title: "doors",
++  resolution: { width: 320, height: 180 },
++  player: "hero",
++  startRoom: "cellar",
++  actors: { hero: { name: "Hero", sprite: "hero", speed: 8 } },
++  rooms: { cellar },
++  flags: { cellar_door_open: false },
++});
++
++async function runUntilSettled<T>(world: World, pending: Promise<T>, maximumMilliseconds = 20_000): Promise<T> {
++  let settled = false;
++  let settledValue!: T;
++  void pending.then((value) => {
++    settled = true;
++    settledValue = value;
++  });
++  for (let elapsed = 0; elapsed < maximumMilliseconds && !settled; elapsed += 16) {
++    world.update(16);
++    await Promise.resolve();
++    await Promise.resolve();
++  }
++  if (!settled) throw new Error("timed out");
++  return settledValue;
++}
++
++/** Walk while recording every tile passed through. */
++async function walkTracing(world: World, to: { x: number; y: number }) {
++  const visited = new Set<string>();
++  const pending = world.walk("hero", to);
++  let settled = false;
++  let arrived = false;
++  void pending.then((value) => {
++    settled = true;
++    arrived = value;
++  });
++  for (let elapsed = 0; elapsed < 20_000 && !settled; elapsed += 16) {
++    world.update(16);
++    await Promise.resolve();
++    await Promise.resolve();
++    const tile = world.tileOf("hero");
++    visited.add(`${tile.x},${tile.y}`);
++  }
++  return { arrived, visited };
++}
++
++function startedWorld(roomOverrides: Partial<RoomDef> = {}) {
++  const world = new World(defineGame({ ...game, rooms: { cellar: { ...cellar, ...roomOverrides } } }), { autoAdvanceMs: 1 });
++  world.start();
++  return world;
++}
++
++describe("doors", () => {
++  it("are shut until their flag is set, and paths go around them", async () => {
++    const world = startedWorld();
++    expect(world.isDoorOpen("cellar-door")).toBe(false);
++    expect(world.layout.walkable("ground", 2, 1)).toBe(false);
++    const { arrived, visited } = await walkTracing(world, { x: 2, y: 2 });
++    expect(arrived).toBe(true);
++    expect(visited.has("2,1")).toBe(false);
++    expect(visited.has("5,1")).toBe(true);
++  });
++
++  it("open when the flag is set, from Ink or code", async () => {
++    const world = startedWorld();
++    const changes: number[] = [];
++    world.events.on("walkableChanged", ({ tiles }) => changes.push(tiles.length));
++    await world.command("set cellar_door_open true");
++    expect(world.isDoorOpen("cellar-door")).toBe(true);
++    expect(changes).toEqual([1]);
++    const { arrived, visited } = await walkTracing(world, { x: 2, y: 2 });
++    expect(arrived).toBe(true);
++    expect(visited.has("2,1")).toBe(true);
++  });
++
++  it("can follow a function instead of a flag", async () => {
++    const world = startedWorld({ doors: [{ id: "cellar-door", tiles: [{ x: 2, y: 1 }], openWhen: (w) => w.has("key") }] });
++    expect(world.isDoorOpen("cellar-door")).toBe(false);
++    world.give("key");
++    world.update(16);
++    expect(world.layout.walkable("ground", 2, 1)).toBe(true);
++  });
++
++  it("re-plans a walk in progress when a door shuts in front of it, keeping the same promise", async () => {
++    const world = startedWorld();
++    world.setFlag("cellar_door_open", true);
++    await world.command("place hero 0 0");
++    const visited = new Set<string>();
++    const pending = world.walk("hero", { x: 2, y: 2 });
++    let arrived: boolean | undefined;
++    void pending.then((value) => (arrived = value));
++    world.update(16);
++    await Promise.resolve();
++    world.setFlag("cellar_door_open", false); // slams shut before the hero gets there
++    for (let elapsed = 0; elapsed < 20_000 && arrived === undefined; elapsed += 16) {
++      world.update(16);
++      await Promise.resolve();
++      await Promise.resolve();
++      const tile = world.tileOf("hero");
++      visited.add(`${tile.x},${tile.y}`);
++    }
++    expect(arrived).toBe(true);
++    expect(visited.has("2,1")).toBe(false);
++    expect(world.tileOf("hero")).toEqual({ x: 2, y: 2 });
++  });
++
++  it("must be on walkable tiles", () => {
++    expect(() => new RoomLayout({ ...cellar, doors: [{ id: "bad", tiles: [{ x: 0, y: 1 }], openWhen: "x" }] })).toThrow(/must be '\.'/);
++  });
++});
++
++describe("setWalkable", () => {
++  it("blocks and unblocks tiles, and a walk fails when nothing's left", async () => {
++    const world = startedWorld();
++    await world.command("block 5 1");
++    expect(world.layout.walkable("ground", 5, 1)).toBe(false);
++    expect(await runUntilSettled(world, world.walk("hero", { x: 2, y: 2 }))).toBe(false);
++    await world.command("unblock 5 1");
++    expect(await runUntilSettled(world, world.walk("hero", { x: 2, y: 2 }))).toBe(true);
++  });
++
++  it("can open a wall that was never a door", async () => {
++    const world = startedWorld();
++    world.setWalkable({ x: 0, y: 1 }, true); // knock through
++    await world.command("place hero 0 0");
++    const { arrived, visited } = await walkTracing(world, { x: 0, y: 2 });
++    expect(arrived).toBe(true);
++    expect(visited.has("0,1")).toBe(true);
++  });
++
++  it("wins over a door, goes back with null, and is saved", async () => {
++    const world = startedWorld();
++    world.setFlag("cellar_door_open", true);
++    world.setWalkable({ x: 2, y: 1 }, false); // rubble in the doorway
++    expect(world.layout.walkable("ground", 2, 1)).toBe(false);
++
++    const saved = world.serialize();
++    expect(saved.walkable).toEqual({ "cellar:ground:2,1": false });
++    const restored = new World(game, { autoAdvanceMs: 1 });
++    restored.load(saved);
++    expect(restored.layout.walkable("ground", 2, 1)).toBe(false);
++
++    world.setWalkable({ x: 2, y: 1 }, null); // cleared: the open door decides again
++    expect(world.layout.walkable("ground", 2, 1)).toBe(true);
++    world.setFlag("cellar_door_open", false);
++    expect(world.layout.walkable("ground", 2, 1)).toBe(false);
++  });
++
++  it("changes a room the player isn't in, ready for when they arrive", async () => {
++    const twoRooms = defineGame({
++      ...game,
++      rooms: { cellar, attic: { ...cellar, id: "attic", doors: [] } },
++    });
++    const world = new World(twoRooms, { autoAdvanceMs: 1 });
++    world.start();
++    world.setWalkable({ x: 5, y: 1 }, false, "attic");
++    expect(world.layout.walkable("ground", 5, 1)).toBe(true); // still in the cellar
++    await runUntilSettled(world, world.goto("attic"));
++    expect(world.layout.walkable("ground", 5, 1)).toBe(false);
++  });
++});

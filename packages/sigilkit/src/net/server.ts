@@ -1,4 +1,4 @@
-import { World, type GameDef, type TilePos } from "../core/index";
+import { World, type GameDef, type LevelTilePos } from "../core/index";
 import { routePartykitRequest, Server, type Connection, type ConnectionContext } from "partyserver";
 import type { AuthVerifier } from "./auth";
 import { IDENTITY_HEADER, isPlayerId, parseClientMessage, PLAYER_PREFIX, type ActorSnapshot, type Identity, type ServerMessage } from "./protocol";
@@ -102,13 +102,14 @@ export class RoomServer extends Server {
     if (!msg) return this.#send({ t: "error", message: "bad message" }, conn);
     if (msg.t === "chat") return this.#send({ t: "chat", from: s.id, name: s.name, text: msg.text });
     if (msg.t === "walk") {
-      if (!this.world.walkmap.walkable(msg.to.x, msg.to.y)) return;
+      const level = msg.to.level ?? this.world.layout.baseLevel;
+      if (!this.world.layout.hasLevel(level) || !this.world.layout.walkable(level, msg.to.x, msg.to.y)) return;
       const seq = (this.#intents.get(s.id) ?? 0) + 1;
       this.#intents.set(s.id, seq);
       const arrived = await this.world.walk(s.id, msg.to);
       // A newer intent cancels this walk; that's not a failure worth correcting.
       if (this.#intents.get(s.id) !== seq || arrived || !this.world.state.actors[s.id]) return;
-      const at: TilePos = this.world.tileOf(s.id);
+      const at: LevelTilePos = { ...this.world.tileOf(s.id), level: this.world.levelOf(s.id) };
       this.#send({ t: "moves", moves: { [s.id]: at } });
       this.#send({ t: "correct", at }, conn);
     }
@@ -140,7 +141,16 @@ export class RoomServer extends Server {
       const a = this.world.state.actors[id]!;
       const def = this.world.game.actors[id];
       const at = this.world.tileOf(id);
-      out[id] = { x: at.x, y: at.y, facing: a.facing, name: def?.name ?? id, sprite: def?.sprite ?? id, speed: def?.speed ?? 4 };
+      const level = this.world.levelOf(id);
+      out[id] = {
+        x: at.x,
+        y: at.y,
+        facing: a.facing,
+        name: def?.name ?? id,
+        sprite: def?.sprite ?? id,
+        speed: def?.speed ?? 4,
+        ...(level !== this.world.layout.baseLevel ? { level } : {}),
+      };
     }
     return out;
   }

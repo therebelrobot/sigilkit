@@ -23,8 +23,14 @@ startGamepad(world);
 // Drop .ogg files in public/audio/<key>.ogg (e.g. door, pour) and they just play.
 const audio = new AudioDirector(world, { resolve: (key) => `/audio/${key}.ogg` });
 
-// Multiplayer is opt-in: run `npm run dev:party` and open ?party=localhost:8787
 const params = new URLSearchParams(location.search);
+// Jump straight to a room while developing: ?room=watchtower
+const roomParam = params.get("room");
+if (roomParam && game.rooms[roomParam as keyof typeof game.rooms]) void world.goto(roomParam);
+// The running world, for poking at in the console.
+Object.assign(globalThis, { __world: world });
+
+// Multiplayer is opt-in: run `npm run dev:party` and open ?party=localhost:8787
 const partyHost = params.get("party");
 if (partyHost) {
   const guest = sessionStorage.getItem("guest") ?? crypto.randomUUID().slice(0, 8);
@@ -43,6 +49,7 @@ function DevKeys() {
   const renderer = useRenderer();
   const w = useWorld();
   useEffect(() => {
+    Object.assign(globalThis, { __renderer: renderer });
     let debug = true;
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;

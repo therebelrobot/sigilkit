@@ -28,7 +28,8 @@ export function builtinCommands(): Map<string, CommandFn> {
     return n;
   };
   return new Map<string, CommandFn>([
-    ["walk", async ([id, x, y], w) => void (await w.walk(id!, { x: num(x, "x"), y: num(y, "y") }))],
+    // walk <actor> <x> <y> [level]
+    ["walk", async ([id, x, y, level], w) => void (await w.walk(id!, { x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) }))],
     ["face", ([id, dir], w) => w.face(id!, dir as never)],
     ["say", async ([speaker, ...text], w) => w.say(speaker === "-" ? null : speaker!, text.join(" "))],
     ["wait", async ([ms], w) => w.wait(num(ms, "ms"))],
@@ -38,7 +39,10 @@ export function builtinCommands(): Map<string, CommandFn> {
     ["set", ([flag, value], w) => w.setFlag(flag!, parseValue(value ?? "true"))],
     ["show", ([id], w) => w.setVisible(id!, true)],
     ["hide", ([id], w) => w.setVisible(id!, false)],
-    ["place", ([id, x, y], w) => w.place(id!, { x: num(x, "x"), y: num(y, "y") })],
+    // place <actor> <x> <y> [level]
+    ["place", ([id, x, y, level], w) => w.place(id!, { x: num(x, "x"), y: num(y, "y"), ...(level ? { level } : {}) })],
+    // reveal <area>: lift a reveal-once area's fog without walking in
+    ["reveal", ([area], w) => w.revealArea(area!)],
     ["music", ([key], w) => w.events.emit("music", { key: key ?? null })],
     ["sfx", ([key], w) => w.events.emit("sfx", { key: key! })],
   ]);
