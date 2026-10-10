@@ -30,7 +30,7 @@ jobs:
       - run: npm run build:docs
         env:
           DOCS_BASE: /${{ github.event.repository.name }}/
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: apps/docs/dist
 
