@@ -115,7 +115,7 @@
     }
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261003.1",
+    "@cloudflare/workers-types": "^5.20261007.1",
     "@types/react": "^19.0.0",
     "inkjs": "^2.4.0",
     "partyserver": "^0.5.10",
