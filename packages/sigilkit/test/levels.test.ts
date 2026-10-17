@@ -167,6 +167,56 @@ describe("multi-level rooms", () => {
     expect(world.levelOf("hero")).toBe("upper");
   });
 
+  /*
+   * In an isometric room a raised landing and a ground tile behind it can sit at the
+   * exact same screen point. The pushed direction scores them equally, so the ground
+   * neighbour must not shadow the stair step or the stairs become unclimbable by stick.
+   * Here the landing (3,2) on "roof" shares a screen point with ground tile (2,1).
+   */
+  const shadowedStairs: RoomDef = {
+    id: "shadows",
+    projection: "isometric",
+    directions: 8,
+    tile: { width: 32, height: 16 },
+    //          x: 0123456
+    walkmap: [
+      /* y0 */ "#######",
+      /* y1 */ "#.....#",
+      /* y2 */ "#.....#",
+      /* y3 */ "#.....#",
+      /* y4 */ "#######",
+    ],
+    levels: [{ id: "roof", elevation: 16, walkmap: ["", "   ....", "   ....", "   ...."] }],
+    // steps (1,2) -> (2,2), landing (3,2): its screen point equals ground tile (2,1).
+    stairs: [{ to: "roof", steps: [{ x: 1, y: 2 }, { x: 2, y: 2 }], top: { x: 3, y: 2 } }],
+    entries: { start: { at: { x: 1, y: 3 } } },
+    hotspots: [],
+  };
+  const shadowedGame = defineGame({
+    title: "shadowed stairs",
+    resolution: { width: 320, height: 180 },
+    player: "hero",
+    startRoom: "shadows",
+    actors: { hero: { name: "Hero", sprite: "hero", speed: 8 } },
+    rooms: { shadows: shadowedStairs },
+  });
+
+  it("prefers the stair step when a ground tile shares the landing's screen point", async () => {
+    const world = new World(shadowedGame, { autoAdvanceMs: 1 });
+    world.start();
+    // The landing and a ground tile behind the stairs are at the same screen spot.
+    expect(world.screenOf({ x: 3, y: 2 }, "roof")).toEqual(world.screenOf({ x: 2, y: 1 }, "ground"));
+
+    await world.command("place hero 2 2");
+    const landing = world.screenOf({ x: 3, y: 2 }, "roof");
+    const lastStep = world.screenOf({ x: 2, y: 2 });
+    const climbing = world.stepToward("hero", { x: landing.x - lastStep.x, y: landing.y - lastStep.y });
+    expect(climbing).not.toBeNull();
+    expect(await runUntilSettled(world, climbing!)).toBe(true);
+    expect(world.levelOf("hero")).toBe("roof");
+    expect(world.tileOf("hero")).toEqual({ x: 3, y: 2 });
+  });
+
   it("lets a newer walk cancel the rest of a multi-level route", async () => {
     const world = startedWorld();
     const firstRoute = world.walk("hero", { x: 3, y: 2, level: "roof" });
