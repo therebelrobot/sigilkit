@@ -12,7 +12,7 @@ import {
   type ApplicationOptions,
 } from "pixi.js";
 import type { ActorDisplay, ActorFactory, PropDisplay, PropFactory } from "./actors";
-import { AreaEffects, DEFAULT_AREA_LOOK, drawBlock, levelBlockoutPieces, sortKeyFor, tileOutline, type AreaLook, type RoomPiece } from "./levels";
+import { AreaEffects, DEFAULT_AREA_LOOK, drawBlock, levelBlockoutPieces, levelDrawBand, sortKeyFor, tileOutline, type AreaLook, type RoomPiece } from "./levels";
 
 export type Scaling = "integer" | "fit" | "auto";
 
@@ -241,7 +241,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
             left: roomBlockoutStyle.door ?? 0x6b4e3d,
             right: doorDarker,
           });
-          doorBlock.zIndex = sortKeyFor(projection, tile.x, tile.y, doorElevation);
+          doorBlock.zIndex = levelDrawBand(world.layout, doorLevel) + sortKeyFor(projection, tile.x, tile.y, doorElevation);
           doorBlock.visible = !world.layout.walkable(doorLevel, tile.x, tile.y);
           blocks.push(doorBlock);
           doorBlocks.push({ view: doorBlock, level: doorLevel, tile });
@@ -426,7 +426,7 @@ export async function createRenderer(world: World, opts: RendererOptions): Promi
       }
       d.view.visible = v.visible;
       d.view.position.set(Math.round(v.screen.x), Math.round(v.screen.y));
-      d.view.zIndex = v.sortY;
+      d.view.zIndex = levelDrawBand(world.layout, v.level) + v.sortY;
       // Hidden in fog: gone. Under a cut-away roof: faded like the roof. Otherwise: shown.
       const actorTile = world.tileOf(v.id);
       const targetAlpha =
@@ -551,7 +551,8 @@ function propPosition(p: PropDef, world: World): Vec2 {
 
 function propDepth(p: PropDef, world: World, fallbackY: number): number {
   const t = p.depthTile ?? p.tile;
-  return t ? sortKeyFor(world.projection, t.x, t.y, propElevation(p, world)) : fallbackY;
+  if (!t) return fallbackY;
+  return levelDrawBand(world.layout, p.level ?? world.layout.baseLevel) + sortKeyFor(world.projection, t.x, t.y, propElevation(p, world));
 }
 
 function propElevation(p: PropDef, world: World): number {

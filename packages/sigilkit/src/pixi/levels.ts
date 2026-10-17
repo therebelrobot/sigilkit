@@ -44,6 +44,27 @@ export function sortKeyFor(projection: Projection, tileX: number, tileY: number,
   return projection.tileToScreen(tileX, tileY).y + elevation * ELEVATION_SORT_BIAS;
 }
 
+/*
+ * Draw order across levels. `sortKeyFor` orders things within one floor by tile and
+ * height; this spaces whole levels apart so they interleave predictably. Each level's
+ * band is far taller than any room's on-screen height.
+ *
+ * A raised floor's *surface* is keyed one band down, so it behaves as the ceiling of the
+ * floor below rather than part of its own level. That gives the rule the blockout wants:
+ * - an actor on the same level as a raised floor always draws in front of it (no clipping
+ *   a character as it climbs onto a deck);
+ * - an actor on the level below stays behind it (a platform still hides what stands behind
+ *   or beneath it);
+ * - anything on the level below that is in front of it still draws over it (stairs in
+ *   front of a porch are not swallowed).
+ */
+export const LEVEL_DRAW_SPAN = 100_000;
+
+/** Draw band for a level: larger for higher floors. */
+export function levelDrawBand(layout: RoomLayout, levelId: string): number {
+  return (layout.hasLevel(levelId) ? layout.level(levelId).index : 0) * LEVEL_DRAW_SPAN;
+}
+
 /** The tile's floor outline (diamond or square), raised by `elevation` pixels. */
 export function tileOutline(projection: Projection, tileX: number, tileY: number, elevation = 0): number[] {
   const corner = (cornerX: number, cornerY: number) => {
@@ -128,13 +149,15 @@ export interface LevelBlockoutStyle {
 /**
  * Blockout for everything a multi-level room adds above its base floor: stair
  * risers, the floor slabs of raised levels, and walls on raised levels. Each is
- * its own piece so cutaways can fade it, sorted with actors by tile and height.
+ * its own piece so cutaways can fade it, sorted with actors by level, tile and
+ * height. A raised floor's surface is keyed one level down (`levelOffset: -1`), so
+ * it never covers an actor on its own level (see `LEVEL_DRAW_SPAN`).
  */
 export function levelBlockoutPieces(world: World, layout: RoomLayout, style: LevelBlockoutStyle): RoomPiece[] {
   const projection = world.projection;
   const pieces: RoomPiece[] = [];
-  const addPiece = (view: Graphics, level: string, tileX: number, tileY: number, sortElevation: number, sortNudge: number) => {
-    view.zIndex = sortKeyFor(projection, tileX, tileY, sortElevation) + sortNudge;
+  const addPiece = (view: Graphics, level: string, tileX: number, tileY: number, sortElevation: number, sortNudge: number, levelOffset = 0) => {
+    view.zIndex = levelDrawBand(layout, level) + levelOffset * LEVEL_DRAW_SPAN + sortKeyFor(projection, tileX, tileY, sortElevation) + sortNudge;
     pieces.push({ view, level, tiles: [{ x: tileX, y: tileY }] });
   };
   for (const step of layout.steps) {
@@ -176,7 +199,7 @@ export function levelBlockoutPieces(world: World, layout: RoomLayout, style: Lev
             left: style.floorSide[0],
             right: style.floorSide[1],
           });
-          addPiece(slab, level.id, tileX, tileY, level.elevation, -0.004);
+          addPiece(slab, level.id, tileX, tileY, level.elevation, -0.004, -1);
         } else if (character === "#") {
           const wall = drawBlock(projection, tileX, tileY, level.elevation - style.slabThickness, level.elevation + style.wallHeight, {
             top: style.wallTop,

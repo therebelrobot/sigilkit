@@ -49,7 +49,7 @@ clearances: [{ tiles: [{ x: 5, y: 6 }], height: 16 }], // a cat flap
 
 ## Elevation in views and picking
 
-- `ActorView` carries `level` and `elevation`, both already applied to `screen`, and a `sortY` draw key that sorts raised things in front of what stands beneath them.
+- `ActorView` carries `level` and `elevation`, both already applied to `screen`, and a `sortY` draw key. Within a floor it sorts by the foot point; across floors each level is its own draw band, and a raised floor sorts one band down, so it hides the level below but never covers an actor on its own level.
 - `world.pickTile(point)` tests stair steps first, then levels from the top down, skipping anything cut away or fogged.
 - Entries, actor placements, props and hotspots take a `level`. `tileArea(room, x, y, w, h, lift, level)` raises a hotspot shape to a floor.
 

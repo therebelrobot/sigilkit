@@ -760,13 +760,21 @@ export class World {
     const otherEnd = this.#stairStepFrom(from, fromLevel);
     if (otherEnd && this.fits(id, otherEnd, otherEnd.level) && !this.#grid.isBlocked(otherEnd, otherEnd.level)) candidates.push(otherEnd);
 
-    let best: { tile: Required<LevelTilePos>; score: number } | null = null;
+    let best: { tile: Required<LevelTilePos>; score: number; changesLevel: boolean } | null = null;
     for (const tile of candidates) {
       const s = this.screenOf(tile, tile.level);
       const sx = s.x - origin.x;
       const sy = s.y - origin.y;
       const score = (sx * dir.x + sy * dir.y) / (Math.hypot(sx, sy) * len);
-      if (score > 0.5 && (!best || score > best.score)) best = { tile, score };
+      if (score <= 0.5) continue;
+      const changesLevel = tile.level !== fromLevel;
+      // Two tiles can sit at exactly the same screen point in an isometric room: a stair
+      // landing and a ground tile behind it share an offset, so the pushed direction scores
+      // them equally and the same-level neighbour (tested first) would always win, making the
+      // stairs unclimbable. When they tie, take the stair step: it's the only way onto the
+      // other level, and what pushing a staircase toward its landing means.
+      const beatsCurrent = !best || score > best.score || (score === best.score && changesLevel && !best.changesLevel);
+      if (beatsCurrent) best = { tile, score, changesLevel };
     }
     if (!best) return null;
     if (best.tile.level !== fromLevel) {
