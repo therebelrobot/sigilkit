@@ -80,6 +80,7 @@ The effect layers belong to your game. They are **not cleared on room change**, 
 ### Sorting rules that keep art honest
 
 - **Actors** sort by their foot point: the bottom-centre of the sprite. In multi-level rooms they sort by where that foot point would be on the base floor, nudged by elevation (`ActorView.sortY`), so standing on a balcony doesn't put you in front of the yard below it.
+- **Raised floors** sort one *level band* down (`LEVEL_DRAW_SPAN`), so a floor reads as the ceiling of the floor below: it hides an actor on a lower level standing beneath or behind it, but never covers one on its own level (climbing onto a deck) or swallows stairs in front of it. Walls, stair risers and props stay in their level's band.
 - **Tile-placed props** sort by `depthTile` if given, else `tile`. Use the **front-most tile** of the footprint (largest `x + y` in isometric, largest `y` in orthogonal) for `depthTile`, so an actor standing in front of the object draws over it.
 - **`at`-placed props** without `tile` or `depthTile` sort by the bottom edge of their art.
 - **Raised blockout walls** sort by their tile's centre, the same key actors use.

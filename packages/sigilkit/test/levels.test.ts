@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defineGame, RoomLayout, World, type RoomDef } from "../src/core/index";
+import { levelBlockoutPieces, levelDrawBand, sortKeyFor } from "../src/pixi/levels";
 
 /*
  * An isometric tower:
@@ -215,6 +216,29 @@ describe("multi-level rooms", () => {
     expect(await runUntilSettled(world, climbing!)).toBe(true);
     expect(world.levelOf("hero")).toBe("roof");
     expect(world.tileOf("hero")).toEqual({ x: 3, y: 2 });
+  });
+
+  it("keys a raised floor one level down so it never covers its own level", () => {
+    const world = new World(shadowedGame, { autoAdvanceMs: 1 });
+    world.start();
+    const pieces = levelBlockoutPieces(world, world.layout, {
+      wallTop: 0,
+      wallLeft: 0,
+      wallRight: 0,
+      floorTop: 0,
+      floorSide: [0, 0],
+      wallHeight: 16,
+      slabThickness: 4,
+    });
+    const roofFloor = pieces.find((piece) => piece.level === "roof" && piece.tiles[0]!.x === 4 && piece.tiles[0]!.y === 2)!;
+    // The floor sits in the band below its own level...
+    expect(roofFloor.view.zIndex).toBeLessThan(levelDrawBand(world.layout, "roof"));
+    // ...so an actor on the roof draws in front of it...
+    const roofActorBehind = levelDrawBand(world.layout, "roof") + sortKeyFor(world.projection, 3, 2, 16);
+    expect(roofActorBehind).toBeGreaterThan(roofFloor.view.zIndex);
+    // ...while an actor on the ground behind it stays hidden behind it.
+    const groundActorBehind = levelDrawBand(world.layout, "ground") + sortKeyFor(world.projection, 3, 2, 0);
+    expect(groundActorBehind).toBeLessThan(roofFloor.view.zIndex);
   });
 
   it("lets a newer walk cancel the rest of a multi-level route", async () => {
